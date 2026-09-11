@@ -33,7 +33,7 @@
 const CGS_SHEETS = {
   // Paste your deployed Apps Script Web App URL here, e.g.:
   // "https://script.google.com/macros/s/AKfycbx.../exec"
-  WEB_APP_URL: "",
+  WEB_APP_URL: "https://script.google.com/macros/s/AKfycbxKLcwuzF_kwyHZz8GYb0hzZi65eYkNUlbl-GwW-FOSHGwvOvR_I_QBca2KFa2uNo2o/exec",
 
   _timer: null,
   _lastPayloadJSON: null,
