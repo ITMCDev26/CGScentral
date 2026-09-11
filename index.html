@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CGS Central — Central Group Services Ordering</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body>
+
+<!-- ============ AUTH SCREEN ============ -->
+<div id="auth-screen" class="auth-screen">
+  <div class="auth-visual">
+    <div class="ring-field" aria-hidden="true">
+      <svg viewBox="0 0 400 400" class="ring-svg">
+        <circle cx="200" cy="200" r="60" class="ring r1"/>
+        <circle cx="200" cy="200" r="105" class="ring r2"/>
+        <circle cx="200" cy="200" r="150" class="ring r3"/>
+        <circle cx="200" cy="200" r="190" class="ring r4"/>
+      </svg>
+      <div class="auth-visual-copy">
+        <span class="eyebrow">Central Group Services</span>
+        <h1>Every order, one click <span class="italic">from soil to street.</span></h1>
+        <p>Signages, banners, trees, shrubs, flowers and thermoplastics — ordered, confirmed and delivered without a spreadsheet in sight.</p>
+        <ul class="auth-stats">
+          <li><strong>7</strong><span>tracked stages per order</span></li>
+          <li><strong>22</strong><span>townships served</span></li>
+          <li><strong>1</strong><span>click checkout</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="auth-panel">
+    <div class="auth-card">
+      <div class="brand-mark">
+        <span class="brand-ring"></span>
+        <span class="brand-name">CGS&nbsp;Central</span>
+      </div>
+
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-auth="signin">Sign in</button>
+        <button class="auth-tab" data-auth="signup">Create account</button>
+      </div>
+
+      <!-- SIGN IN -->
+      <form id="signin-form" class="auth-form">
+        <label>Work email
+          <input type="email" id="si-email" placeholder="you@megaworldcorp.com" required />
+        </label>
+        <label>Password
+          <input type="password" id="si-password" placeholder="••••••••" required />
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Sign in</button>
+        <p class="auth-hint">Demo accounts — <button type="button" class="linklike" id="fill-user">user@megaworldcorp.com</button> · <button type="button" class="linklike" id="fill-admin">admin@megaworldcorp.com</button> <span class="muted">(any password)</span></p>
+      </form>
+
+      <!-- SIGN UP -->
+      <form id="signup-form" class="auth-form hidden">
+        <label>Full name
+          <input type="text" id="su-name" placeholder="Juana Dela Cruz" required />
+        </label>
+        <label>Position
+          <input type="text" id="su-position" placeholder="Property Management Officer" required />
+        </label>
+        <label>Work email
+          <input type="email" id="su-email" placeholder="you@megaworldcorp.com" required />
+        </label>
+        <p class="field-note" id="su-route-note">Emails ending in <code>@megaworldcorp.com</code> are routed to the Megaworld project. Other domains go to Special Projects (Phase 2).</p>
+        <label>Set password
+          <input type="password" id="su-password" placeholder="••••••••" required />
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Create account</button>
+      </form>
+
+      <p class="auth-footnote">By continuing you agree this is a working prototype for CGS internal review.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ APP SHELL ============ -->
+<div id="app" class="app hidden">
+
+  <aside class="sidebar">
+    <div class="brand-mark sidebar-brand">
+      <span class="brand-ring"></span>
+      <span class="brand-name">CGS&nbsp;Central</span>
+    </div>
+
+    <nav id="nav-user" class="sidenav hidden">
+      <button class="nav-item active" data-view="u-dashboard"><i data-ic="rings"></i>Dashboard</button>
+      <button class="nav-item" data-view="u-shop"><i data-ic="cart"></i>Shop</button>
+      <button class="nav-item" data-view="u-ack"><i data-ic="check"></i>Acknowledge <span class="pill" id="ack-count">0</span></button>
+      <button class="nav-item" data-view="u-confirm"><i data-ic="truck"></i>Confirm Delivery <span class="pill" id="confirm-count">0</span></button>
+    </nav>
+
+    <nav id="nav-admin" class="sidenav hidden">
+      <button class="nav-item active" data-view="a-overview"><i data-ic="rings"></i>Overview</button>
+      <div class="sidenav-label">Pipeline</div>
+      <button class="nav-item" data-view="a-new"><i data-ic="inbox"></i>New Orders <span class="pill" id="c-new">0</span></button>
+      <button class="nav-item" data-view="a-confirm"><i data-ic="check"></i>Confirmation</button>
+      <button class="nav-item" data-view="a-prep"><i data-ic="leaf"></i>Preparation</button>
+      <button class="nav-item" data-view="a-availability"><i data-ic="leaf"></i>Availability Watch <span class="pill" id="c-prod">0</span></button>
+      <button class="nav-item" data-view="a-btt"><i data-ic="truck"></i>BTT Assignment</button>
+      <button class="nav-item" data-view="a-dr"><i data-ic="doc"></i>DR Generator</button>
+      <button class="nav-item" data-view="a-delivery"><i data-ic="road"></i>For Delivery</button>
+      <button class="nav-item" data-view="a-delivered"><i data-ic="box"></i>Delivered Items</button>
+      <button class="nav-item" data-view="a-history"><i data-ic="clock"></i>Overall History</button>
+      <button class="nav-item" data-view="a-edit"><i data-ic="doc"></i>Edit Orders</button>
+      <div class="sidenav-label">Reports</div>
+      <button class="nav-item" data-view="a-vehicles"><i data-ic="truck"></i>Vehicle Summary</button>
+      <button class="nav-item" data-view="a-item-summary"><i data-ic="box"></i>Item Summary</button>
+      <div class="sidenav-label">Catalog</div>
+      <button class="nav-item" data-view="a-items"><i data-ic="grid"></i>Items &amp; Pricing</button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="who">
+        <div class="who-name" id="who-name">—</div>
+        <div class="who-role" id="who-role">—</div>
+      </div>
+      <button class="btn btn-ghost btn-block" id="logout-btn">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title" id="view-title">Dashboard</div>
+      <div class="topbar-actions">
+        <button class="cart-btn hidden" id="open-cart-btn">
+          <i data-ic="cart"></i> Cart <span class="pill" id="cart-count">0</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="view-scroll" id="view-root"><!-- views injected here --></div>
+  </main>
+</div>
+
+<!-- ============ CART DRAWER ============ -->
+<div id="cart-drawer" class="drawer">
+  <div class="drawer-backdrop" id="cart-backdrop"></div>
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <h3>Your cart</h3>
+      <button class="icon-btn" id="close-cart-btn">✕</button>
+    </div>
+    <div class="drawer-body" id="cart-items"></div>
+    <div class="drawer-foot">
+      <div class="cart-total-row"><span>Estimated total</span><strong id="cart-total">₱0.00</strong></div>
+      <button class="btn btn-primary btn-block" id="checkout-btn">Proceed to checkout</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ CHECKOUT MODAL ============ -->
+<div id="checkout-modal" class="modal">
+  <div class="modal-backdrop" data-close="checkout-modal"></div>
+  <div class="modal-panel">
+    <div class="modal-head"><h3>Checkout details</h3><button class="icon-btn" data-close="checkout-modal">✕</button></div>
+    <div class="modal-body">
+      <label>Township <span class="req">*</span>
+        <select id="co-township"></select>
+      </label>
+      <div class="ordered-by">
+        <div class="ordered-by-title">Ordered by <span class="muted">(locked to your account)</span></div>
+        <div class="ordered-by-grid">
+          <div><span>Name</span><strong id="co-name">—</strong></div>
+          <div><span>Position</span><strong id="co-position">—</strong></div>
+          <div><span>Email</span><strong id="co-email">—</strong></div>
+        </div>
+      </div>
+      <div class="co-summary" id="co-summary"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close="checkout-modal">Back to cart</button>
+      <button class="btn btn-primary" id="place-order-btn">Place order</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ GENERIC MODAL (item detail / admin actions) ============ -->
+<div id="generic-modal" class="modal">
+  <div class="modal-backdrop" data-close="generic-modal"></div>
+  <div class="modal-panel" id="generic-modal-panel"></div>
+</div>
+
+<!-- ============ TOAST ============ -->
+<div id="toast" class="toast"></div>
+
+<script src="sheets-api.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
