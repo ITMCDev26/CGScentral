@@ -53,10 +53,12 @@
           <input type="email" id="si-email" placeholder="you@megaworldcorp.com" required />
         </label>
         <label>Password
-          <input type="password" id="si-password" placeholder="••••••••" required />
+          <span class="pw-wrap"><input type="password" id="si-password" placeholder="••••••••" autocomplete="current-password" required /><button type="button" class="pw-toggle" data-pw="si-password" aria-label="Show password" aria-pressed="false" title="Show password"><svg class="ic-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="ic-eye-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button></span>
         </label>
+        <label class="check"><input type="checkbox" id="si-remember" /> Remember me on this device</label>
         <button type="submit" class="btn btn-primary btn-block">Sign in</button>
-        <p class="auth-hint">Demo accounts — <button type="button" class="linklike" id="fill-user">user@megaworldcorp.com</button> · <button type="button" class="linklike" id="fill-admin">admin@megaworldcorp.com</button> <span class="muted">(any password)</span></p>
+        <p class="auth-hint" id="si-forgot">Forgot your password? Ask a CGS admin to reset it — they'll give you a temporary one.</p>
+        <p class="auth-hint" id="si-demo-hint">Demo accounts — <button type="button" class="linklike" id="fill-user">user@megaworldcorp.com</button> · <button type="button" class="linklike" id="fill-admin">admin@megaworldcorp.com</button> <span class="muted">(password: demo)</span></p>
       </form>
 
       <!-- SIGN UP -->
@@ -72,7 +74,7 @@
         </label>
         <p class="field-note" id="su-route-note">Emails ending in <code>@megaworldcorp.com</code> are routed to the Megaworld project. Other domains go to Special Projects (Phase 2).</p>
         <label>Set password
-          <input type="password" id="su-password" placeholder="••••••••" required />
+          <span class="pw-wrap"><input type="password" id="su-password" placeholder="At least 8 characters" minlength="8" autocomplete="new-password" required /><button type="button" class="pw-toggle" data-pw="su-password" aria-label="Show password" aria-pressed="false" title="Show password"><svg class="ic-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="ic-eye-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button></span>
         </label>
         <button type="submit" class="btn btn-primary btn-block">Create account</button>
       </form>
@@ -85,10 +87,20 @@
 <!-- ============ APP SHELL ============ -->
 <div id="app" class="app hidden">
 
-  <aside class="sidebar">
-    <div class="brand-mark sidebar-brand">
-      <span class="brand-ring"></span>
-      <span class="brand-name">CGS&nbsp;Central</span>
+  <button type="button" class="menu-fab" id="menu-fab" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false" title="Menu">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <div class="brand-mark sidebar-brand">
+        <span class="brand-ring"></span>
+        <span class="brand-name">CGS&nbsp;Central</span>
+      </div>
+      <button type="button" class="sidebar-close" id="sidebar-close" aria-label="Hide menu" title="Hide menu">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
+      </button>
     </div>
 
     <nav id="nav-user" class="sidenav hidden">
@@ -116,6 +128,9 @@
       <button class="nav-item" data-view="a-item-summary"><i data-ic="box"></i>Item Summary</button>
       <div class="sidenav-label">Catalog</div>
       <button class="nav-item" data-view="a-items"><i data-ic="grid"></i>Items &amp; Pricing</button>
+      <div class="sidenav-label">Accounts</div>
+      <button class="nav-item" data-view="a-users"><i data-ic="check"></i>Users &amp; Passwords</button>
+      <button class="nav-item" data-view="a-townships"><i data-ic="inbox"></i>Township Addresses</button>
     </nav>
 
     <div class="sidebar-foot">
@@ -134,6 +149,10 @@
         <button class="cart-btn hidden" id="open-cart-btn">
           <i data-ic="cart"></i> Cart <span class="pill" id="cart-count">0</span>
         </button>
+        <div class="topbar-user">
+          <span class="topbar-name" id="topbar-name"></span>
+          <button type="button" class="btn btn-ghost btn-sm topbar-logout" id="topbar-logout" title="Sign out">Sign out</button>
+        </div>
       </div>
     </header>
 
@@ -187,6 +206,24 @@
 <div id="generic-modal" class="modal">
   <div class="modal-backdrop" data-close="generic-modal"></div>
   <div class="modal-panel" id="generic-modal-panel"></div>
+</div>
+
+<!-- ============ SET NEW PASSWORD (after a temporary password) ============ -->
+<div id="pwchange-modal" class="modal">
+  <div class="modal-backdrop"></div>
+  <div class="modal-panel">
+    <div class="modal-head"><h3>Set a new password</h3></div>
+    <div class="modal-body">
+      <p class="muted" style="font-size:13px;">Hi <strong id="pc-who"></strong> — you signed in with a temporary password. Choose your own password to continue (at least 8 characters).</p>
+      <label>New password <span class="pw-wrap"><input type="password" id="pc-new" placeholder="••••••••" autocomplete="new-password" /><button type="button" class="pw-toggle" data-pw="pc-new" aria-label="Show password" aria-pressed="false" title="Show password"><svg class="ic-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="ic-eye-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button></span></label>
+      <label>Confirm new password <span class="pw-wrap"><input type="password" id="pc-confirm" placeholder="••••••••" autocomplete="new-password" /><button type="button" class="pw-toggle" data-pw="pc-confirm" aria-label="Show password" aria-pressed="false" title="Show password"><svg class="ic-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="ic-eye-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19C5 19 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button></span></label>
+      <p class="field-error" id="pc-msg" role="alert"></p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="pc-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="pc-save">Save &amp; continue</button>
+    </div>
+  </div>
 </div>
 
 <!-- ============ TOAST ============ -->

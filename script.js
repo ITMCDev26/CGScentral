@@ -136,6 +136,30 @@ const TOWNSHIPS = [
   "Westside City Estate Association"
 ];
 
+/* Estate addresses. legalName = how the township is printed on the DR.
+   Matched to the TOWNSHIPS names above by townshipKey(), so "Twin Lakes Estate
+   Commercial Association, Inc." finds "Twin Lakes Estate Association". */
+const TOWNSHIP_SEED = [
+  {legalName:"Mckinley Town Center Estate Association", address:"G/F McKinley Parking Building North Road Brgy. Pinagsama Taguig City"},
+  {legalName:"Mckinley West Estate Association Inc.", address:"G/F McKinley Parking Building North Road Brgy. Pinagsama Taguig City"},
+  {legalName:"Uptown Bonifacio Estate Association Inc.", address:"25th Floor Alliance Global Tower 36th Street corner 11th Avenue Uptown Bonifacio Taguig City"},
+  {legalName:"Newport City Estate Association", address:"N150 Building Newport Blvd. Newport Pasay City"},
+  {legalName:"Arcovia City Estate Association Inc.", address:"99 Eulogio Rodriguez Ugong Pasig City"},
+  {legalName:"Maple Grove Estate Association Inc.", address:"Antero Soriano Highway, General Trias, Cavite"},
+  {legalName:"Capital Town Estate Association, Inc.", address:"711 Capitol Blvd, San Fernando, 2000 Pampanga"},
+  {legalName:"Southwoods City Estate Association", address:"Manila Southwoods Sports Club Cabiling Baybay Carmona Cavite"},
+  {legalName:"Westside City Estate Association, Inc.", address:"Parañaque, Metro Manila"},
+  {legalName:"Twin Lakes Estate Commercial Association, Inc.", address:"Tagaytay - Nasugbu Highway, Laurel, Batangas"},
+  {legalName:"Boracay Newcoast Federation Inc.", address:"Newcoast Drive Brgy. Yapak Boracay Malay Aklan"},
+  {legalName:"Citylink Coach Services Inc.", address:"Ground Floor Parking Bldg. McKinley Town Center Bonifacio Global City"},
+  {legalName:"Megaworld Corporation", address:"Alliance Global Tower 36th Street corner 11th Avenue Uptown Bonifacio Taguig City"}
+];
+function townshipKey(n){
+  return String(n||"").toLowerCase().replace(/[^a-z0-9 ]/g,"")
+    .replace(/\b(inc|association|estate|commercial|federation)\b/g,"").replace(/\s+/g,"");
+}
+function escAttr(v){ return String(v==null?"":v).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;"); }
+
 /* Delivery-type classification (per the billing rules in the brief) */
 const SEGMENT_TYPE = {
   SIGNAGES:"A", BANNERS:"A", TREES:"A", SHRUBS:"A", FLOWERS:"A",
@@ -180,14 +204,14 @@ let VEHICLES = [
 
 /* ---------------------------- STAGES ------------------------------------- */
 const STAGES = ["Ordered","Confirmed","Acknowledged","Prepared","BTT Assigned","For Delivery","Delivered"];
-const STAGE_INDEX = { new:0, awaiting_ack:1, rejected:1, preparation:2, ready_for_btt:3, ready_for_dr:4, for_delivery:5, delivered:6 };
+const STAGE_INDEX = { new:0, awaiting_ack:1, rejected:1, cancelled:1, preparation:2, ready_for_btt:3, ready_for_dr:4, for_delivery:5, delivered:6 };
 const STATUS_LABEL = {
-  new:"New ticket", awaiting_ack:"Waiting for your approval", rejected:"Rejected",
+  new:"New ticket", awaiting_ack:"Waiting for your approval", rejected:"Rejected", cancelled:"Cancelled",
   preparation:"In preparation", ready_for_btt:"Ready for BTT", ready_for_dr:"Ready for DR",
   for_delivery:"Out for delivery", delivered:"Delivered"
 };
 const STATUS_CLASS = {
-  new:"status-new", awaiting_ack:"status-wait", rejected:"status-rejected",
+  new:"status-new", awaiting_ack:"status-wait", rejected:"status-rejected", cancelled:"status-rejected",
   preparation:"status-prep", ready_for_btt:"status-progress", ready_for_dr:"status-assigned",
   for_delivery:"status-delivery", delivered:"status-delivered"
 };
@@ -203,10 +227,85 @@ const state = {
   orders: [], // tickets — one segment per ticket
   orderSeq: 1,
   townshipsList: [...TOWNSHIPS],
+  townshipInfo: {}, // name -> {legalName, address}, persisted in the Townships tab
   deliveryLogs: [], // finalized BTT trips: {id, vehicleId, releaseAt, deliveredAt, bttNumber, tickets:[ids], feeTotal, breakdown, hours}
   availabilityLog: [], // history of items that came out of production or were marked unavailable
   notices: [], // {id, userEmail, seen, message, ticketId} — queued pop-ups for "your item is now available"
 };
+
+function townshipDetails(name){
+  const own = state.townshipInfo[name];
+  if(own && (own.address || own.legalName)){
+    if(own.address) return { legalName: own.legalName || name, address: own.address };
+  }
+  const seed = TOWNSHIP_SEED.find(x=>townshipKey(x.legalName)===townshipKey(name));
+  return { legalName: (own&&own.legalName) || (seed?seed.legalName:name), address: seed?seed.address:"" };
+}
+function ensureTownshipInfo(){
+  state.townshipsList.forEach(n=>{
+    const cur = state.townshipInfo[n] || (state.townshipInfo[n] = {legalName:"", address:""});
+    const d = townshipDetails(n);
+    if(!cur.address) cur.address = d.address;
+    if(!cur.legalName) cur.legalName = d.legalName;
+  });
+}
+function hydrateTownships(list){
+  if(!Array.isArray(list) || !list.length) return;
+  state.townshipsList = list.map(t=>typeof t==="string"?t:t.name);
+  list.forEach(t=>{ if(t && typeof t==="object") state.townshipInfo[t.name] = { legalName:t.legalName||"", address:t.address||"" }; });
+}
+
+/* ---------------------------- STOCK (reserved at checkout) -----------------
+   Stock is taken when the order is PLACED and given back if it's cancelled or
+   rejected. The shop never blocks on stock: whatever isn't on the shelf becomes
+   an "advance order" line (advance:true) that is under production.
+   Each ticket line remembers how many units it took from stock in `reserved`
+   (lines from before this feature have no `reserved` and are never touched). */
+function isVoidOrder(o){ return o && (o.status==="rejected" || o.status==="cancelled"); }
+function stockNum(it){ return Math.max(0, Number(it.stock)||0); }
+
+function buildLinesForCartItem(it, qty){
+  const have = stockNum(it), take = Math.min(have, qty), rest = qty - take;
+  const base = { itemId:it.id, name:it.name, segment:it.segment, rate:it.rate, oum:it.oum, avail:null };
+  const lines = [];
+  if(take>0) lines.push({ ...base, qty:take, reserved:take });
+  if(rest>0) lines.push({ ...base, qty:rest, reserved:0, advance:true });
+  it.stock = have - take;
+  return lines;
+}
+function releaseOrderStock(o){
+  let back = 0;
+  (o.items||[]).forEach(i=>{
+    const r = Number(i.reserved)||0; if(r<=0) return;
+    const c = CATALOG.find(c=>c.id===i.itemId);
+    if(c){ c.stock = (Number(c.stock)||0) + r; back += r; }
+    i.reserved = 0;
+  });
+  return back;
+}
+/* Admin review: a line served from stock keeps its reservation; a line marked
+   In production / Unavailable gives it back; a line switched back to Available
+   takes whatever is on the shelf. */
+function reconcileLineStock(i){
+  if(i.reserved===undefined) return;
+  const c = CATALOG.find(c=>c.id===i.itemId); if(!c) return;
+  if(i.avail!=="available" && i.reserved>0){ c.stock = (Number(c.stock)||0) + i.reserved; i.reserved = 0; }
+  else if(i.avail==="available" && !(i.reserved>0)){
+    const take = Math.min(stockNum(c), Number(i.qty)||0);
+    c.stock = stockNum(c) - take; i.reserved = take;
+  }
+}
+function stockBadgeHTML(it){
+  const n = stockNum(it);
+  if(n<=0) return `<span class="stock-badge prod">Under production · advance order</span>`;
+  return `<span class="stock-badge ${n<=10?"low":""}">${n<=10?`Only ${n} left`:`${n} in stock`}</span>`;
+}
+function advanceNote(it, qty, inShop){
+  const n = stockNum(it);
+  if(qty<=n || (inShop && n<=0)) return "";
+  if(n<=0) return `Advance order — all ${qty} ${it.oum} will be under production.`;
+  return `${n} in stock · the other ${qty-n} ${it.oum} will be an advance order (under production).`;
+}
 
 function makeOrder(user, items, township, segment, batchId){
   const id = "TCK-2026-"+String(state.orderSeq++).padStart(4,"0");
@@ -284,6 +383,7 @@ function seedDemoOrders(){
 }
 
 function itemAvailLabel(i){
+  if(!i.avail && i.advance) return `<span class="unavail">Advance order · under production</span>`;
   if(!i.avail || i.avail==="available") return peso(i.rate*i.qty);
   if(i.avail==="production") return `<span class="unavail">In production${i.etaDate?` · avail. ${fmtDateShort(new Date(i.etaDate+"T00:00:00").getTime())}`:""}</span>`;
   if(i.avail==="released") return `<span class="released">Moved to ${i.releasedTo||"new ticket"}</span>`;
@@ -302,6 +402,7 @@ function orderTotal(o){ return o.items.reduce((s,i)=> s + ((!i.avail || i.avail=
 function checkAvailabilityReleases(){
   const today = new Date(); today.setHours(0,0,0,0);
   state.orders.slice().forEach(o=>{
+    if(isVoidOrder(o)) return;
     o.items.forEach(item=>{
       if(item.avail==="production" && item.etaDate && !item.released){
         const eta = new Date(item.etaDate+"T00:00:00");
@@ -310,7 +411,30 @@ function checkAvailabilityReleases(){
     });
   });
 }
+/* Same rule as checkReleases() in Code.gs: while the ticket hasn't gone out for
+   delivery yet, an item that finishes production simply becomes available ON
+   that ticket (same DR). Only when the ticket is already out for delivery or
+   delivered does the item get its own new ticket and DR. */
+const MERGE_STATUSES = ["new","awaiting_ack","preparation","ready_for_btt","ready_for_dr"];
+function mergeProducedItem(order, item){
+  item.avail = "available"; item.fromProduction = true; item.producedAt = Date.now();
+  const when = fmtDateShort(new Date(item.etaDate+"T00:00:00").getTime());
+  const note = `${item.name} × ${item.qty} ${item.oum} came out of production (${when}) and was added to this ticket — it ships on this ticket's DR.`;
+  order.adminRemark = order.adminRemark ? order.adminRemark+" "+note : note;
+  if(order.drDocUrl) order.drStale = true; // the Google Doc DR was made before this item joined
+  state.availabilityLog.push({
+    id:"AVL-"+Date.now()+"-"+Math.floor(Math.random()*1000), ts:Date.now(),
+    orderId:order.id, newTicketId:order.id, merged:true, itemName:item.name, qty:item.qty,
+    township:order.township, segment:order.segment, userEmail:order.userEmail, result:"available"
+  });
+  state.notices.push({
+    id:"NTC-"+Date.now()+"-"+Math.floor(Math.random()*1000), userEmail:order.userEmail, seen:false,
+    message:`${item.name} × ${item.qty} ${item.oum} from ${order.id} is now available — it will ship together with the rest of this ticket, on the same DR.`,
+    ticketId:order.id
+  });
+}
 function releaseItem(order, item){
+  if(MERGE_STATUSES.includes(order.status)) return mergeProducedItem(order, item);
   item.released = true;
   item.avail = "released";
   const t = makeOrder(
@@ -479,33 +603,189 @@ document.getElementById("fill-admin").addEventListener("click",()=>{
   document.getElementById("si-email").value="admin@megaworldcorp.com";
   document.getElementById("si-password").value="demo";
 });
-document.getElementById("signin-form").addEventListener("submit", e=>{
-  e.preventDefault();
-  const email = document.getElementById("si-email").value.trim().toLowerCase();
-  const pass = document.getElementById("si-password").value;
+
+/* --- show / hide password (eye) --- */
+document.querySelectorAll(".pw-toggle").forEach(btn=>btn.addEventListener("click", ()=>{
+  const input = document.getElementById(btn.dataset.pw);
+  const show = input.type === "password";
+  input.type = show ? "text" : "password";
+  btn.classList.toggle("on", show);
+  btn.setAttribute("aria-pressed", String(show));
+  btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+  btn.title = show ? "Hide password" : "Show password";
+}));
+function resetPasswordFields(){
+  ["si-password","su-password"].forEach(id=>{
+    const el = document.getElementById(id); el.value = ""; el.type = "password";
+    const b = document.querySelector(`.pw-toggle[data-pw="${id}"]`);
+    if(b){ b.classList.remove("on"); b.setAttribute("aria-pressed","false"); b.setAttribute("aria-label","Show password"); b.title="Show password"; }
+  });
+}
+
+/* --- remember me (stored only in this browser; never the password) --- */
+const REMEMBER_DAYS = 30;
+const ls = {
+  get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } },
+  set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} },
+  del(k){ try{ localStorage.removeItem(k); }catch(e){} }
+};
+function readRememberedSession(){
+  try{
+    const s = JSON.parse(ls.get("cgs_session")||"null");
+    if(s && s.token && s.exp > Date.now()) return s;
+  }catch(e){}
+  ls.del("cgs_session"); return null;
+}
+(function prefillRemembered(){
+  const last = ls.get("cgs_last_email");
+  if(last){ document.getElementById("si-email").value = last; document.getElementById("si-remember").checked = true; }
+})();
+
+/* --- sign-in is checked by the Apps Script server ---------------------------
+   Passwords are never stored in the Sheet and never kept in this browser: the
+   server keeps a salted hash privately and hands back a signed token. "Remember
+   me" only keeps that token (30 days). With no Sheet connected the app runs on
+   the two local demo accounts instead. */
+let bootReady = Promise.resolve(); // set at the bottom; sign-in/up wait for the Sheet to finish loading
+async function ensureSheetLoaded(){
+  if(!CGS_SHEETS.enabled() || CGS_SHEETS.loaded) return true;
+  const ok = await loadFromSheet();
+  if(!ok) toast("Can't reach Google Sheets right now, so accounts can't be checked. Check your connection and try again.", true);
+  return ok;
+}
+(function sheetModeHints(){
+  const on = CGS_SHEETS.enabled();
+  document.getElementById("si-demo-hint").classList.toggle("hidden", on);
+  document.getElementById("si-forgot").classList.toggle("hidden", !on);
+})();
+
+function finishSignIn(user, token, remember){
+  CGS_SHEETS.token = token || null;
+  if(remember && token){
+    ls.set("cgs_session", JSON.stringify({ token, email:user.email, exp: Date.now()+REMEMBER_DAYS*86400000 }));
+    ls.set("cgs_last_email", user.email);
+  } else { ls.del("cgs_session"); ls.del("cgs_last_email"); }
+  login(user);
+}
+function localDemoUser(email, pass){
   const u = state.users.find(u=>u.email.toLowerCase()===email);
-  if(!u){ toast("No account found for that email.", true); return; }
-  if(u.password !== pass && pass !== "demo"){ toast("Incorrect password.", true); return; }
-  login(u);
-});
-document.getElementById("signup-form").addEventListener("submit", e=>{
+  return (u && u.password===pass) ? u : null;
+}
+
+/* Shown after a sign-in with a temporary password. Resolves to {user, token}, or null if cancelled. */
+function askNewPassword(user, tempPass, remember){
+  return new Promise(resolve=>{
+    const modal = document.getElementById("pwchange-modal");
+    const f1 = document.getElementById("pc-new"), f2 = document.getElementById("pc-confirm");
+    const msg = document.getElementById("pc-msg"), save = document.getElementById("pc-save"), cancel = document.getElementById("pc-cancel");
+    document.getElementById("pc-who").textContent = user.name;
+    f1.value = ""; f2.value = ""; msg.textContent = ""; save.disabled = false;
+    ["pc-new","pc-confirm"].forEach(id=>{
+      document.getElementById(id).type = "password";
+      const b = document.querySelector(`.pw-toggle[data-pw="${id}"]`);
+      if(b){ b.classList.remove("on"); b.setAttribute("aria-pressed","false"); b.setAttribute("aria-label","Show password"); }
+    });
+    const close = val=>{ modal.classList.remove("open"); save.onclick = null; cancel.onclick = null; f2.onkeydown = null; resolve(val); };
+    cancel.onclick = ()=>close(null);
+    save.onclick = async ()=>{
+      const a = f1.value, b = f2.value;
+      if(a.length < 8){ msg.textContent = "Use at least 8 characters."; return; }
+      if(a !== b){ msg.textContent = "The two passwords don't match."; return; }
+      if(a === tempPass){ msg.textContent = "Choose a password that's different from the temporary one."; return; }
+      save.disabled = true; msg.textContent = "";
+      try{ const r = await CGS_SHEETS.changePassword(user.email, tempPass, a, remember); toast("Password updated."); close(r); }
+      catch(err){ msg.textContent = err.message; save.disabled = false; }
+    };
+    f2.onkeydown = e=>{ if(e.key==="Enter") save.onclick(); };
+    modal.classList.add("open"); setTimeout(()=>f1.focus(), 60);
+  });
+}
+
+document.getElementById("signin-form").addEventListener("submit", async e=>{
   e.preventDefault();
-  const name = document.getElementById("su-name").value.trim();
-  const position = document.getElementById("su-position").value.trim();
-  const email = document.getElementById("su-email").value.trim().toLowerCase();
-  const password = document.getElementById("su-password").value;
-  if(state.users.some(u=>u.email.toLowerCase()===email)){ toast("An account with that email already exists.", true); return; }
-  const project = email.endsWith("@megaworldcorp.com") ? "megaworld" : "special";
-  const u = {name, position, email, password, role:"user", project};
-  state.users.push(u);
-  toast(project==="special" ? "Account created. Special Projects access is coming in Phase 2 — signing you in to a limited preview." : "Account created — welcome to CGS Central.");
-  login(u);
+  const btn = e.target.querySelector('button[type="submit"]'); btn.disabled = true;
+  try{
+    await bootReady;
+    const email = document.getElementById("si-email").value.trim().toLowerCase();
+    const pass = document.getElementById("si-password").value;
+    const remember = document.getElementById("si-remember").checked;
+    if(!CGS_SHEETS.enabled()){
+      const u = localDemoUser(email, pass);
+      if(!u){ toast("Incorrect email or password.", true); return; }
+      finishSignIn(u, null, remember); return;
+    }
+    if(!(await ensureSheetLoaded())) return;
+    let r;
+    try{ r = await CGS_SHEETS.login(email, pass, remember); }
+    catch(err){ toast(err.message, true); return; }
+    if(r.mustChangePassword){
+      const done = await askNewPassword(r.user, pass, remember);
+      if(!done) return;
+      finishSignIn(done.user, done.token, remember);
+    } else finishSignIn(r.user, r.token, remember);
+  } finally { btn.disabled = false; }
 });
+document.getElementById("signup-form").addEventListener("submit", async e=>{
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type="submit"]'); btn.disabled = true;
+  try{
+    await bootReady;
+    const name = document.getElementById("su-name").value.trim();
+    const position = document.getElementById("su-position").value.trim();
+    const email = document.getElementById("su-email").value.trim().toLowerCase();
+    const password = document.getElementById("su-password").value;
+    if(password.length < 8){ toast("Password must be at least 8 characters.", true); return; }
+    let user, token = null;
+    if(CGS_SHEETS.enabled()){
+      if(!(await ensureSheetLoaded())) return;
+      try{ const r = await CGS_SHEETS.registerUser({ name, position, email }, password, false); user = r.user; token = r.token; }
+      catch(err){ toast("Could not create your account: " + err.message, true); return; }
+    } else {
+      if(state.users.some(u=>u.email.toLowerCase()===email)){ toast("An account with that email already exists.", true); return; }
+      user = {name, position, email, password, role:"user", project: email.endsWith("@megaworldcorp.com") ? "megaworld" : "special"};
+      state.users.push(user);
+    }
+    toast(user.project==="special" ? "Account created. Special Projects access is coming in Phase 2 — signing you in to a limited preview." : "Account created — welcome to CGS Central.");
+    finishSignIn(user, token, false);
+  } finally { btn.disabled = false; }
+});
+
+/* ---------------------------- MENU: floating hamburger + collapsible sidebar -
+   Phones: the sidebar slides in over the page (floating ☰ button, tap outside
+   or Esc to close). Desktop: the sidebar can be tucked away and the ☰ button
+   brings it back; that choice is remembered. */
+const mqPhone = window.matchMedia ? window.matchMedia("(max-width: 900px)") : { matches:false, addEventListener(){} };
+const SIDEBAR_KEY = "cgs_sidebar_collapsed";
+function menuIsOpen(){ return mqPhone.matches ? appEl.classList.contains("menu-open") : !appEl.classList.contains("sidebar-collapsed"); }
+function syncMenuAria(){
+  const fab = document.getElementById("menu-fab");
+  fab.setAttribute("aria-expanded", String(menuIsOpen()));
+}
+function setMenuOpen(open){
+  if(mqPhone.matches) appEl.classList.toggle("menu-open", open);
+  else { appEl.classList.toggle("sidebar-collapsed", !open); ls.set(SIDEBAR_KEY, open ? "0" : "1"); }
+  syncMenuAria();
+}
+document.getElementById("menu-fab").addEventListener("click", ()=>setMenuOpen(true));
+document.getElementById("sidebar-close").addEventListener("click", ()=>setMenuOpen(false));
+document.getElementById("sidebar-backdrop").addEventListener("click", ()=>setMenuOpen(false));
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && mqPhone.matches && menuIsOpen()) setMenuOpen(false); });
+document.getElementById("sidebar").addEventListener("click", e=>{ if(mqPhone.matches && e.target.closest(".nav-item")) setMenuOpen(false); });
+(mqPhone.addEventListener ? ()=>mqPhone.addEventListener("change", onBreakpoint) : ()=>{})();
+function onBreakpoint(){
+  appEl.classList.remove("menu-open");
+  appEl.classList.toggle("sidebar-collapsed", !mqPhone.matches && ls.get(SIDEBAR_KEY)==="1");
+  syncMenuAria();
+}
+onBreakpoint();
+
 function login(u){
   state.currentUser = u;
   authScreen.classList.add("hidden");
   appEl.classList.remove("hidden");
   document.getElementById("who-name").textContent = u.name;
+  document.getElementById("topbar-name").textContent = u.name;
+  appEl.classList.remove("menu-open"); syncMenuAria();
   document.getElementById("who-role").textContent = u.role==="admin" ? "CGS Admin · "+u.project : "Requester · "+u.project;
   const isAdmin = u.role==="admin";
   document.getElementById("nav-user").classList.toggle("hidden", isAdmin);
@@ -513,11 +793,16 @@ function login(u){
   document.getElementById("open-cart-btn").classList.toggle("hidden", isAdmin);
   navigate(isAdmin ? "a-overview" : "u-dashboard");
 }
-document.getElementById("logout-btn").addEventListener("click", ()=>{
+function signOut(){
+  ls.del("cgs_session"); resetPasswordFields();
+  CGS_SHEETS.token = null;
   state.currentUser = null; state.cart = [];
+  appEl.classList.remove("menu-open"); syncMenuAria();
   appEl.classList.add("hidden");
   authScreen.classList.remove("hidden");
-});
+}
+document.getElementById("logout-btn").addEventListener("click", signOut);
+document.getElementById("topbar-logout").addEventListener("click", signOut);
 
 /* ---------------------------- NAVIGATION -----------------------------------*/
 const viewTitles = {
@@ -526,7 +811,7 @@ const viewTitles = {
   "a-prep":"Preparation of Orders", "a-btt":"BTT Assignment", "a-dr":"DR Generator",
   "a-delivery":"For Delivery", "a-delivered":"Delivered Items", "a-history":"Overall Delivery History",
   "a-edit":"Edit Orders", "a-vehicles":"Vehicle Summary", "a-item-summary":"Item Summary",
-  "a-items":"Items & Pricing", "a-availability":"Availability Watch"
+  "a-items":"Items & Pricing", "a-availability":"Availability Watch", "a-townships":"Township Addresses", "a-users":"Users & Passwords"
 };
 let currentView = "u-dashboard";
 function navigate(view){
@@ -579,6 +864,7 @@ function renderCart(){
         <div class="cart-line-info">
           <div class="cart-line-name">${it.name}</div>
           <div class="cart-line-price">${peso(it.rate)} / ${it.oum}</div>
+          ${advanceNote(it,c.qty)?`<div class="adv-note">${advanceNote(it,c.qty)}</div>`:""}
           <div class="cart-line-actions">
             <div class="qty-stepper">
               <button data-cart-dec="${it.id}">−</button><span>${c.qty}</span><button data-cart-inc="${it.id}">+</button>
@@ -610,7 +896,7 @@ document.getElementById("checkout-btn").addEventListener("click", ()=>{
   state.cart.forEach(c=>{ const it=CATALOG.find(i=>i.id===c.itemId); (bySeg[it.segment]=bySeg[it.segment]||[]).push({it,c}); });
   const segCount = Object.keys(bySeg).length;
   const rows = Object.keys(bySeg).map(seg=>{
-    const lines = bySeg[seg].map(({it,c})=>`<div class="co-summary-row"><span>${it.name} × ${c.qty} ${it.oum}</span><strong>${peso(it.rate*c.qty)}</strong></div>`).join("");
+    const lines = bySeg[seg].map(({it,c})=>`<div class="co-summary-row"><span>${it.name} × ${c.qty} ${it.oum}</span><strong>${peso(it.rate*c.qty)}</strong></div>${advanceNote(it,c.qty)?`<div class="adv-note">${advanceNote(it,c.qty)}</div>`:""}`).join("");
     return `<div style="margin-bottom:8px;"><div class="item-segment" style="margin-bottom:4px;">${seg} — separate ticket</div>${lines}</div>`;
   }).join("");
   const total = state.cart.reduce((s,c)=>{ const it=CATALOG.find(i=>i.id===c.itemId); return s+it.rate*c.qty; },0);
@@ -623,7 +909,7 @@ document.getElementById("checkout-btn").addEventListener("click", ()=>{
 document.getElementById("place-order-btn").addEventListener("click", ()=>{
   const township = document.getElementById("co-township").value;
   const bySeg = {};
-  state.cart.forEach(c=>{ const it=CATALOG.find(i=>i.id===c.itemId); (bySeg[it.segment]=bySeg[it.segment]||[]).push({itemId:it.id,name:it.name,segment:it.segment,rate:it.rate,oum:it.oum,qty:c.qty,avail:null}); });
+  state.cart.forEach(c=>{ const it=CATALOG.find(i=>i.id===c.itemId); (bySeg[it.segment]=bySeg[it.segment]||[]).push(...buildLinesForCartItem(it, c.qty)); });
   const batchId = "BATCH-"+Date.now();
   const created = [];
   Object.keys(bySeg).forEach(seg=>{
@@ -633,7 +919,8 @@ document.getElementById("place-order-btn").addEventListener("click", ()=>{
   state.cart = [];
   updateCartBadge();
   closeModal("checkout-modal");
-  toast(`${created.length} ticket${created.length>1?"s":""} placed (${created.join(", ")}) — CGS will confirm availability shortly.`);
+  const advanced = state.orders.filter(o=>created.includes(o.id)).some(o=>o.items.some(i=>i.advance));
+  toast(`${created.length} ticket${created.length>1?"s":""} placed (${created.join(", ")}) — CGS will confirm availability shortly.${advanced?" Out-of-stock items were placed as advance orders (under production).":""}`);
   navigate("u-dashboard");
 });
 
@@ -654,7 +941,7 @@ function updateAdminCounts(){
   if(el){ const n = state.orders.filter(o=>o.status==="new").length; el.textContent=n; el.classList.toggle("zero", n===0); }
   const pEl = document.getElementById("c-prod");
   if(pEl){
-    const n = state.orders.reduce((s,o)=>s+o.items.filter(i=>i.avail==="production" && !i.released).length, 0);
+    const n = state.orders.reduce((s,o)=>s+(isVoidOrder(o)?0:o.items.filter(i=>i.avail==="production" && !i.released).length), 0);
     pEl.textContent = n; pEl.classList.toggle("zero", n===0);
   }
 }
@@ -673,9 +960,9 @@ function updateAckCount(){
 
 /* ---------------------------- STAGE TRACKER --------------------------------*/
 function stageTracker(order){
-  const cur = order.status==="rejected" ? -1 : STAGE_INDEX[order.status];
+  const cur = isVoidOrder(order) ? -1 : STAGE_INDEX[order.status];
   return `<div class="stage-tracker">${STAGES.map((label,i)=>{
-    const done = order.status!=="rejected" && i<cur;
+    const done = !isVoidOrder(order) && i<cur;
     const isCurrent = i===cur;
     return `${i>0?`<div class="stage-line ${i<=cur?'done':''}"></div>`:""}
       <div class="stage-node ${done?'done':''} ${isCurrent?'current':''}">
@@ -704,7 +991,7 @@ function myOrders(){ return state.orders.filter(o=>o.userEmail===state.currentUs
 
 function viewUserDashboard(){
   const orders = myOrders();
-  const ongoing = orders.filter(o=>!["delivered","rejected"].includes(o.status)).length;
+  const ongoing = orders.filter(o=>!["delivered","rejected","cancelled"].includes(o.status)).length;
   const delivered = orders.filter(o=>o.status==="delivered").length;
   const needsAck = orders.filter(o=>o.status==="awaiting_ack").length;
   const needsConfirm = orders.filter(o=>!o.customerConfirmedAt && (o.status==="for_delivery"||o.status==="delivered")).length;
@@ -740,7 +1027,7 @@ function orderCardUser(o){
     </div>
     ${timelineHTML(o)}
     ${o.adminRemark ? `<div class="remark-box"><strong>CGS note:</strong> ${o.adminRemark}</div>` : ""}
-    ${o.status==="awaiting_ack" ? `<div class="ticket-actions"><button class="btn btn-primary btn-sm" data-ack="${o.id}">Acknowledge &amp; proceed</button></div>` : ""}
+    ${(o.status==="awaiting_ack" || o.status==="new") ? `<div class="ticket-actions">${o.status==="awaiting_ack"?`<button class="btn btn-primary btn-sm" data-ack="${o.id}">Acknowledge &amp; proceed</button>`:""}<button class="btn btn-ghost btn-sm" data-cancel-order="${o.id}">Cancel order</button></div>` : ""}
     ${!o.customerConfirmedAt && (o.status==="for_delivery"||o.status==="delivered") ? `<div class="ticket-actions"><button class="btn btn-primary btn-sm" data-confirm-delivery="${o.id}">Confirm delivery received</button></div>` : ""}
   </div>`;
 }
@@ -773,25 +1060,31 @@ function renderItemGrid(){
         <div class="item-segment">${it.segment}</div>
         <div class="item-name">${it.name}</div>
         <div class="item-price">${peso(it.rate)}<span class="item-oum"> / ${it.oum}</span></div>
+        <div class="stock-line">${stockBadgeHTML(it)}</div>
+        <div class="adv-note" id="adv-${it.id}">${advanceNote(it, qty||1, true)}</div>
         <div class="item-foot">
           <div class="qty-stepper">
             <button data-shop-dec="${it.id}">−</button><span id="qty-${it.id}">${qty||1}</span><button data-shop-inc="${it.id}">+</button>
           </div>
-          <button class="add-btn ${qty?'added':''}" data-add="${it.id}">${qty?`In cart (${qty})`:"Add to cart"}</button>
+          <button class="add-btn ${qty?'added':''}" data-add="${it.id}">${qty?`In cart (${qty})`:(stockNum(it)<=0?"Advance order":"Add to cart")}</button>
         </div>
       </div>
     </div>`;
   }).join("");
 }
 const draftQty = {};
+function refreshAdvNote(id){
+  const it = CATALOG.find(c=>c.id===id), el = document.getElementById("adv-"+id);
+  if(it && el) el.textContent = advanceNote(it, draftQty[id]||cartQty(id)||1, true);
+}
 function afterRenderShop(){
   document.getElementById("shop-search").addEventListener("input", e=>{ shopState.q=e.target.value; document.getElementById("item-grid").innerHTML = renderItemGrid(); afterRenderShop(); });
   document.querySelectorAll("[data-seg]").forEach(b=>b.addEventListener("click", ()=>{ shopState.segment=b.dataset.seg; render(); }));
   document.querySelectorAll("[data-shop-inc]").forEach(b=>b.addEventListener("click", ()=>{
-    const id=b.dataset.shopInc; draftQty[id]=(draftQty[id]|| (cartQty(id)||1))+1; document.getElementById("qty-"+id).textContent=draftQty[id];
+    const id=b.dataset.shopInc; draftQty[id]=(draftQty[id]|| (cartQty(id)||1))+1; document.getElementById("qty-"+id).textContent=draftQty[id]; refreshAdvNote(id);
   }));
   document.querySelectorAll("[data-shop-dec]").forEach(b=>b.addEventListener("click", ()=>{
-    const id=b.dataset.shopDec; draftQty[id]=Math.max(1,(draftQty[id]|| (cartQty(id)||1))-1); document.getElementById("qty-"+id).textContent=draftQty[id];
+    const id=b.dataset.shopDec; draftQty[id]=Math.max(1,(draftQty[id]|| (cartQty(id)||1))-1); document.getElementById("qty-"+id).textContent=draftQty[id]; refreshAdvNote(id);
   }));
   document.querySelectorAll("[data-add]").forEach(b=>b.addEventListener("click", ()=>{
     const id=b.dataset.add; const q = draftQty[id] || parseInt(document.getElementById("qty-"+id).textContent,10) || 1;
@@ -825,6 +1118,16 @@ function afterRenderUser(){
     toast(`Ticket ${o.id} acknowledged — now in preparation.`);
     render();
   }));
+  document.querySelectorAll("[data-cancel-order]").forEach(b=>b.addEventListener("click", ()=>{
+    const o = state.orders.find(o=>o.id===b.dataset.cancelOrder);
+    if(!o || !["new","awaiting_ack"].includes(o.status)) return;
+    if(!confirm(`Cancel ticket ${o.id}? Any stock set aside for it will be released.`)) return;
+    const back = releaseOrderStock(o);
+    o.status = "cancelled"; o.cancelledAt = Date.now(); o.cancelledBy = "requester";
+    o.adminRemark = "Cancelled by the requester.";
+    toast(`Ticket ${o.id} cancelled.${back?` ${back} item(s) returned to stock.`:""}`);
+    render();
+  }));
   document.querySelectorAll("[data-confirm-delivery]").forEach(b=>b.addEventListener("click", ()=>{
     const o = state.orders.find(o=>o.id===b.dataset.confirmDelivery);
     o.customerConfirmedAt = Date.now();
@@ -838,7 +1141,7 @@ function afterRenderUser(){
    ============================================================ */
 function viewAdminOverview(){
   const orders = state.orders;
-  const ongoing = orders.filter(o=>!["delivered","rejected"].includes(o.status)).length;
+  const ongoing = orders.filter(o=>!["delivered","rejected","cancelled"].includes(o.status)).length;
   const closed = orders.filter(o=>o.status==="delivered").length;
   const overdue = orders.filter(o=>o.status==="new" && hoursBetween(o.createdAt, Date.now())>48);
   const delivered = orders.filter(o=>o.deliveredAt);
@@ -926,12 +1229,14 @@ function afterRenderAdminNew(){
   document.querySelectorAll("[data-review]").forEach(b=>b.addEventListener("click", ()=>openReviewModal(b.dataset.review)));
   document.querySelectorAll("[data-reject]").forEach(b=>b.addEventListener("click", ()=>{
     const o = state.orders.find(o=>o.id===b.dataset.reject);
+    const back = releaseOrderStock(o);
     o.status="rejected"; o.adminRemark="Order rejected — CGS does not carry these items.";
-    toast(`Order ${o.id} rejected.`, true); render();
+    toast(`Order ${o.id} rejected.${back?` ${back} item(s) returned to stock.`:""}`, true); render();
   }));
 }
 function openReviewModal(orderId){
   const o = state.orders.find(o=>o.id===orderId);
+  o.items.forEach(i=>{ if(i.advance && !i.avail) i.avail = "production"; }); // advance orders start as "In production"
   const panel = document.getElementById("generic-modal-panel");
   panel.innerHTML = `
     <div class="modal-head"><h3>Review ${o.id}</h3><button class="icon-btn" data-close="generic-modal">✕</button></div>
@@ -977,6 +1282,7 @@ function openReviewModal(orderId){
   document.getElementById("confirm-review-btn").addEventListener("click", ()=>{
     if(o.items.some(i=>!i.avail)){ toast("Mark availability for every item first.", true); return; }
     if(o.items.some(i=>i.avail==="production" && !i.etaDate)){ toast("Set an availability date for every item in production.", true); return; }
+    o.items.forEach(i=>reconcileLineStock(i)); // give stock back for lines that will not ship from stock
     o.items.forEach(i=>{ if(i.avail==="unavailable") logUnavailable(o, i); });
     o.adminRemark = document.getElementById("review-remark").value.trim() || "All items reviewed. Please acknowledge to proceed.";
     o.status = "awaiting_ack"; o.confirmedAt = Date.now();
@@ -1059,6 +1365,26 @@ function afterRenderAdminBTT(){
   }));
 }
 
+function mergeDrLines(lines){
+  const m = {};
+  lines.forEach(i=>{ const k = i.name+"|"+i.oum;
+    if(m[k]) m[k].qty += Number(i.qty)||0; else m[k] = { name:i.name, qty:Number(i.qty)||0, unit:i.oum, status:"COMPLETE" }; });
+  return Object.values(m);
+}
+/* Everything the Google Doc needs — name, address, date, items and numbers come from the order. */
+function drPayload(o){
+  const info = townshipDetails(o.township);
+  let dateStr;
+  const d = o.deliveryDate ? String(o.deliveryDate).slice(0,10) : "";
+  if(/^\d{4}-\d{2}-\d{2}$/.test(d)){ const [y,m,dd] = d.split("-"); dateStr = `${m}/${dd}/${y}`; }
+  else { const n = new Date(); dateStr = String(n.getMonth()+1).padStart(2,"0")+"/"+String(n.getDate()).padStart(2,"0")+"/"+n.getFullYear(); }
+  return {
+    orderId:o.id, drNumber:o.drNumber, township: info.legalName || o.township, address: info.address || "", date: dateStr,
+    items: mergeDrLines(o.items.filter(i=>i.avail==="available")),
+    bttNumber: o.noBtt ? null : (o.bttNumber||null), iomNumber: o.iomNumber || ""
+  };
+}
+
 /* --- DR Generator --- */
 function viewAdminDR(){
   const orders = state.orders.filter(o=>o.status==="ready_for_dr");
@@ -1073,6 +1399,7 @@ function viewAdminDR(){
       <div class="dr-grid">
         <div><span>Ordered by</span>${o.userName} — ${o.userPosition}</div>
         <div><span>Township</span>${o.township}</div>
+        <div><span>Address</span>${townshipDetails(o.township).address||'<em class="muted">No address yet — add it under Township Addresses</em>'}</div>
         <div><span>Vehicle</span>${vehicle?vehicle.name+" — "+vehicle.driver:"—"}</div>
         <div><span>Delivery date</span>${fmtDateShort(new Date(o.deliveryDate).getTime())}</div>
       </div>
@@ -1082,8 +1409,15 @@ function viewAdminDR(){
       <div class="ticket-items">
         ${o.items.filter(i=>i.avail==='available').map(i=>`<div class="ticket-item-row"><span>${i.name} × ${i.qty} ${i.oum}</span><span>${peso(i.rate*i.qty)}</span></div>`).join("")}
       </div>
+      ${o.drStale?`<div class="remark-box"><strong>DR needs updating:</strong> an item came out of production after this DR was created. Regenerate it so it lists everything before you send it out.</div>`:""}
       <div class="ticket-actions">
-        <button class="btn btn-ghost btn-sm" onclick="window.print()">Print / Download PDF</button>
+        ${CGS_SHEETS.enabled()
+          ? (o.drDocUrl
+              ? `<a class="btn btn-ghost btn-sm" href="${escAttr(o.drDocUrl)}" target="_blank" rel="noopener">Review DR (Google Doc)</a>
+                 <button class="btn btn-ghost btn-sm" data-print-dr="${o.id}">Print</button>
+                 <button class="linklike" data-create-dr="${o.id}" style="font-size:12px;">Regenerate</button>`
+              : `<button class="btn btn-ghost btn-sm" data-create-dr="${o.id}">Create DR (Google Doc)</button>`)
+          : `<button class="btn btn-ghost btn-sm" onclick="window.print()">Print / Download PDF</button>`}
         <button class="btn btn-primary btn-sm" data-confirm-dr="${o.id}">Confirm &amp; send to delivery</button>
       </div>
     </div>`;}).join("")}`;
@@ -1092,8 +1426,28 @@ function afterRenderAdminDR(){
   document.querySelectorAll("[data-iom]").forEach(inp=>inp.addEventListener("change", ()=>{
     const o = state.orders.find(o=>o.id===inp.dataset.iom); o.iomNumber = inp.value.trim();
   }));
+  document.querySelectorAll("[data-create-dr]").forEach(b=>b.addEventListener("click", async ()=>{
+    const o = state.orders.find(o=>o.id===b.dataset.createDr);
+    if(o.drDocUrl && !o.drStale && !confirm("This creates a new Google Doc for this DR. The old one stays in your Drive. Continue?")) return;
+    b.disabled = true; b.textContent = "Creating…";
+    try{
+      const out = await CGS_SHEETS.createDR(drPayload(o));
+      o.drDocId = out.docId; o.drDocUrl = out.url; o.drDocAt = Date.now(); o.drStale = false;
+      toast(`${o.drNumber} created as a Google Doc — review or print it below.`);
+    }catch(err){ toast("Could not create the DR: " + err.message, true); }
+    render();
+  }));
+  document.querySelectorAll("[data-print-dr]").forEach(b=>b.addEventListener("click", async ()=>{
+    const o = state.orders.find(o=>o.id===b.dataset.printDr);
+    const label = b.textContent; b.disabled = true; b.textContent = "Preparing…";
+    try{ await CGS_SHEETS.printDR(o.drDocId); }
+    catch(err){ toast("Could not prepare the print: " + err.message, true); }
+    b.disabled = false; b.textContent = label;
+  }));
   document.querySelectorAll("[data-confirm-dr]").forEach(b=>b.addEventListener("click", ()=>{
     const o = state.orders.find(o=>o.id===b.dataset.confirmDr);
+    if(CGS_SHEETS.enabled() && !o.drDocUrl){ toast("Create the DR (Google Doc) first, then confirm.", true); return; }
+    if(o.drStale){ toast("Regenerate the DR first — an item was added after it was created.", true); return; }
     o.drAt = Date.now(); o.status = "for_delivery";
     toast(`${o.id} confirmed — delivery details emailed to ${o.userEmail}.`);
     render();
@@ -1298,7 +1652,9 @@ function openEditOrderModal(orderId){
     o.bttNumber = bttVal || null; o.noBtt = !bttVal && o.noBtt;
     o.deliveryDate = document.getElementById("eo-date").value || null;
     o.township = document.getElementById("eo-township").value;
+    const prevStatus = o.status;
     o.status = document.getElementById("eo-status").value;
+    if(isVoidOrder(o) && !isVoidOrder({status:prevStatus})) releaseOrderStock(o); // cancelled/rejected here => stock goes back
     o.adminRemark = document.getElementById("eo-remark").value.trim();
     closeModal("generic-modal"); toast(`${o.id} updated.`); render();
   });
@@ -1439,7 +1795,21 @@ function itemFormModal(existing){
         <label>Unit of measure <input id="ni-oum" value="${it.oum}" placeholder="pc / sqft / sqm" /></label>
       </div>
       <label>Item name <input id="ni-name" value="${it.name}" placeholder="e.g. Solar Pedestrian Signage" /></label>
-      <label>Image URL <input id="ni-image" value="${it.image||''}" placeholder="https://… (leave blank for the default icon)" /></label>
+      <div class="img-upload">
+        <span class="img-upload-title">Item image</span>
+        <div class="img-upload-row">
+          <div class="img-upload-preview" id="ni-preview">${it.image?`<img src="${it.image}" alt="">`:"No image"}</div>
+          <div class="img-upload-actions">
+            <input type="file" id="ni-file" accept="image/*" class="hidden" />
+            <div>
+              <button type="button" class="btn btn-ghost btn-sm" id="ni-pick">Upload image</button>
+              <button type="button" class="linklike" id="ni-remove">Remove</button>
+            </div>
+            <div class="muted" id="ni-status" style="font-size:12px;">${CGS_SHEETS.enabled()?"Uploads to Google Drive; the link is saved in the Sheet.":"Google Sheets isn't connected — paste an image URL below instead."}</div>
+          </div>
+        </div>
+      </div>
+      <label>Or paste an image URL <input id="ni-image" value="${it.image||''}" placeholder="https://… (leave blank for the default icon)" /></label>
       <div class="form-grid-2">
         <label>Rate (₱) <input id="ni-rate" type="number" min="0" step="0.01" value="${it.rate}"/></label>
         <label>Stock <input id="ni-stock" type="number" min="0" value="${it.stock}" /></label>
@@ -1447,13 +1817,38 @@ function itemFormModal(existing){
     </div>
     <div class="modal-foot"><button class="btn btn-ghost" data-close="generic-modal">Cancel</button><button class="btn btn-primary" id="save-item-btn">${existing?"Save changes":"Add to catalog"}</button></div>`;
   panel.querySelectorAll("[data-close]").forEach(el=>el.addEventListener("click", ()=>closeModal("generic-modal")));
+  // --- image upload (admin -> Google Drive -> link stored in the Sheet) ---
+  let imgMeta = { imageView: it.imageView||null, imageFileId: it.imageFileId||null };
+  let uploading = false;
+  const fileEl = document.getElementById("ni-file"), statusEl = document.getElementById("ni-status");
+  const urlEl = document.getElementById("ni-image"), previewEl = document.getElementById("ni-preview");
+  const showPreview = ()=>{ previewEl.innerHTML = urlEl.value.trim() ? `<img src="${urlEl.value.trim()}" alt="">` : "No image"; };
+  document.getElementById("ni-pick").addEventListener("click", ()=>fileEl.click());
+  fileEl.addEventListener("change", async ()=>{
+    const f = fileEl.files[0]; if(!f) return;
+    uploading = true; statusEl.textContent = "Uploading to Google Drive…";
+    try{
+      const out = await CGS_SHEETS.uploadImage(f);
+      urlEl.value = out.url; imgMeta = { imageView: out.viewUrl, imageFileId: out.fileId };
+      showPreview(); statusEl.textContent = "Uploaded ✓ — saved to Google Drive.";
+    }catch(err){
+      statusEl.textContent = "Upload failed: " + err.message; toast("Image upload failed: " + err.message, true);
+    }finally{ uploading = false; fileEl.value = ""; }
+  });
+  document.getElementById("ni-remove").addEventListener("click", ()=>{
+    urlEl.value = ""; imgMeta = { imageView:null, imageFileId:null }; showPreview(); statusEl.textContent = "Image removed (save to apply).";
+  });
+  urlEl.addEventListener("input", ()=>{ imgMeta = { imageView:null, imageFileId:null }; showPreview(); }); // pasted URL replaces uploaded file
+
   document.getElementById("save-item-btn").addEventListener("click", ()=>{
+    if(uploading){ toast("Wait for the image upload to finish.", true); return; }
     const name = document.getElementById("ni-name").value.trim();
     const rate = parseFloat(document.getElementById("ni-rate").value);
     if(!name || !rate){ toast("Add a name and rate first.", true); return; }
     const data = { segment:document.getElementById("ni-segment").value, name, rate,
       oum:document.getElementById("ni-oum").value||"pc", stock:parseInt(document.getElementById("ni-stock").value,10)||0,
-      image: document.getElementById("ni-image").value.trim()||null };
+      image: document.getElementById("ni-image").value.trim()||null,
+      imageView: imgMeta.imageView, imageFileId: imgMeta.imageFileId };
     if(existing){ Object.assign(existing, data); toast("Item updated."); }
     else { CATALOG.push({ id:"ITM-"+String(CATALOG.length+1).padStart(3,"0"), ...data }); toast("Item added to catalog."); }
     closeModal("generic-modal"); render();
@@ -1467,11 +1862,97 @@ function afterRenderAdminItems(){
   }));
 }
 
+/* --- Users & passwords (admin) ---
+   Accounts live in the Users tab. A password is never shown or stored there:
+   an admin can only issue a temporary one, which the person must replace at
+   their next sign-in. */
+const usersView = { list:null, error:null };
+function viewAdminUsers(){
+  const head = `<div class="view-head"><div><h2>Users &amp; passwords</h2><p>Everyone who can sign in. Reset a password to give someone a temporary one — they must choose a new password the next time they sign in.</p></div>${CGS_SHEETS.enabled()?`<button class="btn btn-ghost btn-sm" id="users-refresh">Refresh</button>`:""}</div>`;
+  if(!CGS_SHEETS.enabled()) return head + emptyState("Connect Google Sheets","Accounts are stored in your Google Sheet. Add your Web App URL in sheets-api.js to manage them here.");
+  return head + `<div id="users-table">${usersTableHTML()}</div>`;
+}
+function usersTableHTML(){
+  if(usersView.error) return `<div class="remark-box">${escAttr(usersView.error)}</div>`;
+  if(!usersView.list) return `<p class="muted">Loading accounts…</p>`;
+  const me = String(state.currentUser.email).toLowerCase();
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Name</th><th>Position</th><th>Email</th><th>Role</th><th>Project</th><th>Password</th><th></th></tr></thead>
+    <tbody>${usersView.list.map(u=>`<tr>
+      <td>${escAttr(u.name)}</td><td>${escAttr(u.position||"—")}</td><td>${escAttr(u.email)}</td>
+      <td>${u.role==="admin"?"Admin":"Requester"}</td><td>${escAttr(u.project||"—")}</td>
+      <td style="font-size:12px;">${escAttr(u.pwStatus||"—")}</td>
+      <td>${String(u.email).toLowerCase()===me ? `<span class="muted" style="font-size:12px;">You</span>` : `<button class="btn btn-ghost btn-sm" data-reset-pw="${escAttr(u.email)}" data-name="${escAttr(u.name)}">Reset password</button>`}</td>
+    </tr>`).join("")}</tbody></table></div>`;
+}
+async function loadUsersList(){
+  try{ usersView.list = await CGS_SHEETS.listAccounts(); usersView.error = null; }
+  catch(err){ usersView.error = err.message; }
+  const el = document.getElementById("users-table");
+  if(el){ el.innerHTML = usersTableHTML(); bindUsersTable(); }
+}
+function bindUsersTable(){
+  document.querySelectorAll("[data-reset-pw]").forEach(b=>b.addEventListener("click", ()=>doResetPassword(b.dataset.resetPw, b.dataset.name)));
+}
+async function doResetPassword(email, name){
+  if(!confirm(`Reset the password for ${name} (${email})?\n\nThey will be signed out everywhere and given a temporary password to replace at their next sign-in.`)) return;
+  try{
+    const r = await CGS_SHEETS.resetPassword(email);
+    showTempPassword(name, r.email, r.tempPassword);
+    loadUsersList();
+  }catch(err){ toast(err.message, true); }
+}
+function showTempPassword(name, email, temp){
+  const panel = document.getElementById("generic-modal-panel");
+  panel.innerHTML = `
+    <div class="modal-head"><h3>Temporary password</h3><button class="icon-btn" data-close="generic-modal">✕</button></div>
+    <div class="modal-body">
+      <p>Give this to <strong>${escAttr(name)}</strong> (${escAttr(email)}) privately — it is shown only now.</p>
+      <div class="temp-pw"><code id="tp-code">${escAttr(temp)}</code><button class="btn btn-ghost btn-sm" id="tp-copy">Copy</button></div>
+      <p class="muted" style="font-size:12.5px;">They'll be asked to choose a new password when they sign in with it. Any device they were signed in on has been signed out.</p>
+    </div>
+    <div class="modal-foot"><button class="btn btn-primary" data-close="generic-modal">Done</button></div>`;
+  panel.querySelectorAll("[data-close]").forEach(el=>el.addEventListener("click", ()=>closeModal("generic-modal")));
+  document.getElementById("tp-copy").addEventListener("click", async ()=>{
+    try{ await navigator.clipboard.writeText(temp); toast("Temporary password copied."); }
+    catch(e){ const r = document.createRange(); r.selectNodeContents(document.getElementById("tp-code")); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); toast("Select and copy the password."); }
+  });
+  openModal("generic-modal");
+}
+function afterRenderAdminUsers(){
+  if(!CGS_SHEETS.enabled()) return;
+  const r = document.getElementById("users-refresh"); if(r) r.addEventListener("click", ()=>{ usersView.list = null; document.getElementById("users-table").innerHTML = usersTableHTML(); loadUsersList(); });
+  bindUsersTable();
+  loadUsersList();
+}
+
+/* --- Township addresses (feeds the DR) --- */
+function viewAdminTownships(){
+  const inp = "width:100%;padding:8px 10px;border:1.5px solid var(--sand);border-radius:8px;font-family:inherit;";
+  return `<div class="view-head"><div><h2>Township addresses</h2><p>Printed on every DR. Changes save to the Townships tab of your Sheet automatically.</p></div></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Township</th><th>Name on DR</th><th>Address</th></tr></thead>
+    <tbody>${state.townshipsList.map((n,i)=>{ const d = state.townshipInfo[n] || {};
+      return `<tr><td>${n}</td>
+        <td><input style="${inp}" data-tn-legal="${i}" value="${escAttr(d.legalName||n)}" /></td>
+        <td><input style="${inp}" data-tn-addr="${i}" value="${escAttr(d.address||"")}" placeholder="Add address" /></td></tr>`; }).join("")}
+    </tbody></table></div>`;
+}
+function afterRenderAdminTownships(){
+  const save = (i, field, val)=>{
+    const n = state.townshipsList[i];
+    state.townshipInfo[n] = { ...(state.townshipInfo[n]||{}), [field]: val.trim() };
+    CGS_SHEETS.scheduleSave(snapshotState); toast("Saved.");
+  };
+  document.querySelectorAll("[data-tn-legal]").forEach(el=>el.addEventListener("change", ()=>save(+el.dataset.tnLegal, "legalName", el.value)));
+  document.querySelectorAll("[data-tn-addr]").forEach(el=>el.addEventListener("change", ()=>save(+el.dataset.tnAddr, "address", el.value)));
+}
+
 /* --- Availability watch (production ETAs + availability history) --- */
 function viewAdminAvailability(){
   const pending = [];
   state.orders.forEach(o=>o.items.forEach((i,idx)=>{
-    if(i.avail==="production" && !i.released) pending.push({o,i,idx});
+    if(i.avail==="production" && !i.released && !isVoidOrder(o)) pending.push({o,i,idx});
   }));
   pending.sort((a,b)=> (a.i.etaDate||"9999").localeCompare(b.i.etaDate||"9999"));
   const today = new Date(); today.setHours(0,0,0,0);
@@ -1495,11 +1976,11 @@ function viewAdminAvailability(){
   <h3 class="section-title">Availability history</h3>
   ${history.length===0 ? emptyState("No history yet","Items that become available or get marked unavailable will be logged here.") : `
   <div class="table-wrap"><table>
-    <thead><tr><th>When</th><th>Ticket</th><th>Item</th><th>Qty</th><th>Township</th><th>Result</th><th>New ticket</th></tr></thead>
+    <thead><tr><th>When</th><th>Ticket</th><th>Item</th><th>Qty</th><th>Township</th><th>Result</th><th>Goes to</th></tr></thead>
     <tbody>
       ${history.map(h=>`<tr><td>${fmtDate(h.ts)}</td><td>${h.orderId}</td><td>${h.itemName}</td><td>${h.qty}</td><td>${h.township}</td>
         <td><span class="status-badge ${h.result==='available'?'status-delivered':'status-rejected'}">${h.result==='available'?'Available':'Not available'}</span></td>
-        <td>${h.newTicketId||"—"}</td></tr>`).join("")}
+        <td>${h.merged ? "Same ticket &amp; DR" : (h.newTicketId||"—")}</td></tr>`).join("")}
     </tbody>
   </table></div>`}`;
 }
@@ -1530,7 +2011,7 @@ const VIEWS = {
   "a-prep": viewAdminPrep, "a-btt": viewAdminBTT, "a-dr": viewAdminDR,
   "a-delivery": viewAdminDelivery, "a-delivered": viewAdminDelivered, "a-history": viewAdminHistory,
   "a-edit": viewAdminEdit, "a-vehicles": viewAdminVehicles, "a-item-summary": viewAdminItemSummary,
-  "a-items": viewAdminItems, "a-availability": viewAdminAvailability
+  "a-items": viewAdminItems, "a-availability": viewAdminAvailability, "a-townships": viewAdminTownships, "a-users": viewAdminUsers
 };
 function afterRender(view){
   if(view==="u-shop") afterRenderShop();
@@ -1546,6 +2027,8 @@ function afterRender(view){
   if(view==="a-vehicles") afterRenderAdminVehicles();
   if(view==="a-item-summary") afterRenderAdminItemSummary();
   if(view==="a-items") afterRenderAdminItems();
+  if(view==="a-townships") afterRenderAdminTownships();
+  if(view==="a-users") afterRenderAdminUsers();
   if(view==="a-availability") afterRenderAdminAvailability();
   maybeShowAvailabilityNotice();
 }
@@ -1558,16 +2041,15 @@ function afterRender(view){
    ---------------------------------------------------------------------------*/
 function snapshotState(){
   return {
-    orders: state.orders, catalog: CATALOG, vehicles: VEHICLES, users: state.users,
-    townships: state.townshipsList, availabilityLog: state.availabilityLog,
+    orders: state.orders, catalog: CATALOG, vehicles: VEHICLES,
+    townships: state.townshipsList.map(n=>({ name:n, legalName:(state.townshipInfo[n]||{}).legalName||"", address:(state.townshipInfo[n]||{}).address||"" })),
+    availabilityLog: state.availabilityLog,
     orderSeq: state.orderSeq
   };
 }
 function hydrateFromRemote(data){
   if(Array.isArray(data.catalog) && data.catalog.length) CATALOG = data.catalog;
   if(Array.isArray(data.vehicles) && data.vehicles.length) VEHICLES = data.vehicles;
-  if(Array.isArray(data.users) && data.users.length) state.users = data.users;
-  if(Array.isArray(data.townships) && data.townships.length) state.townshipsList = data.townships.map(t=>typeof t==="string"?t:t.name);
   state.orders = Array.isArray(data.orders) ? data.orders : [];
   state.availabilityLog = Array.isArray(data.availabilityLog) ? data.availabilityLog : [];
   state.orderSeq = data.orderSeq || (state.orders.length+1);
@@ -1585,13 +2067,32 @@ function hydrateFromRemote(data){
      falls back to the original in-memory demo data (nothing persists
      between reloads), exactly like before.
    ---------------------------------------------------------------------------*/
-async function boot(){
+/* Pulls everything from the Sheet. Returns false if it can't be reached
+   (the app then refuses to save, so a failed load can never wipe the Sheet). */
+async function loadFromSheet(){
   const remote = await CGS_SHEETS.loadAll();
-  if(remote && Array.isArray(remote.orders) && remote.orders.length){
-    hydrateFromRemote(remote);
+  if(!remote) return false;
+  hydrateTownships(remote.townships);
+  hydrateFromRemote(remote);
+  if(!(remote.orders||[]).length && !(remote.catalog||[]).length) seedDemoOrders();   // very first run only (saved after the first sign-in)
+  ensureTownshipInfo();
+  return true;
+}
+async function boot(){
+  if(CGS_SHEETS.enabled()){
+    const ok = await loadFromSheet();
+    if(!ok) toast("Couldn't reach Google Sheets — nothing will be saved until it reconnects. Reload to try again.", true);
   } else {
     seedDemoOrders();
+    ensureTownshipInfo();
   }
   if(state.currentUser) render();
+  else if(CGS_SHEETS.enabled() && CGS_SHEETS.loaded){
+    const sess = readRememberedSession();               // "Remember me": ask the server if the token is still good
+    if(sess){
+      try{ const r = await CGS_SHEETS.validateSession(sess.token); CGS_SHEETS.token = sess.token; login(r.user); }
+      catch(err){ if(!/reach/i.test(err.message)) ls.del("cgs_session"); }
+    }
+  }
 }
-boot();
+bootReady = boot();
