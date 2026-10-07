@@ -522,3 +522,89 @@ tr:hover td{background:var(--sage-100);}
 .sidebar-foot .btn-ghost:hover{background:rgba(255,255,255,.10);}
 .who-name{line-height:1.3;}
 .who-role{margin-top:2px;}
+
+/* --- save status dot (top bar) --- */
+.sync-status{display:inline-flex; align-items:center; gap:7px; font-size:12px; color:var(--ink-soft); white-space:nowrap;}
+.sync-dot{width:9px; height:9px; border-radius:50%; background:#9aa79d; flex:none;}
+.sync-status[data-state="saving"] .sync-dot{background:#d99a1a; animation:syncPulse 1s ease-in-out infinite;}
+.sync-status[data-state="saved"] .sync-dot{background:#3f9a62;}
+.sync-status[data-state="error"] .sync-dot{background:#c0392b;}
+.sync-status[data-state="error"]{color:#a32f22; font-weight:600;}
+@keyframes syncPulse{50%{opacity:.35;}}
+@media (max-width:600px){ .sync-status:not([data-state="error"]) .sync-text{display:none;} }
+
+/* ===== Special Projects ===== */
+.auth-tabs{flex-wrap:wrap;}
+.auth-tab{font-size:13px; padding-left:10px; padding-right:10px;}
+.auth-form textarea, .auth-form select{width:100%; box-sizing:border-box; padding:11px 12px; border:1.5px solid var(--sand); border-radius:10px; font:inherit; background:var(--paper, #fffdf8);}
+.auth-form input[type=file]{padding:9px; background:#fff; border:1.5px dashed var(--sand); border-radius:10px; width:100%; box-sizing:border-box;}
+.reg-done{background:var(--sage-100); border-radius:12px; padding:14px; margin-top:6px;}
+.reg-done p{margin:6px 0 12px; font-size:13px; line-height:1.45;}
+.modal-wide{max-width:880px; width:calc(100% - 24px);}
+.modal-wide .modal-body{max-height:70vh; overflow:auto;}
+.pdf-frame{width:100%; height:52vh; min-height:300px; border:1px solid var(--sand); border-radius:10px; background:#fff;}
+.cmp-facts{display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; margin:12px 0;}
+.cmp-facts span{display:block; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft);}
+.btn-danger{background:#fff; color:#a32f22; border:1.5px solid #e2b4ae;}
+.btn-danger:hover{background:#fbeeec;}
+.file-btn{cursor:pointer; display:inline-flex; align-items:center;}
+.type-badge.SP{background:#e9e4f7; color:#4b3a8a;}
+.sp-note{font-size:12px; color:var(--ink-soft); margin-top:2px;}
+.sp-paymode{display:block; margin-top:14px; font-weight:600; font-size:13px;}
+.sp-paymode select{width:100%; margin-top:4px; padding:10px; border:1.5px solid var(--sand); border-radius:10px; font:inherit;}
+.sp-contact{display:flex; gap:10px; align-items:flex-start; padding:10px; border:1.5px solid var(--sand); border-radius:10px; margin-bottom:8px; cursor:pointer; font-weight:500;}
+.sp-contact input{margin-top:4px; width:auto;}
+.sp-tag{font-size:11px; color:var(--forest-700); font-style:normal; background:var(--sage-100); padding:1px 7px; border-radius:999px; margin-left:4px;}
+.sp-new{padding:4px 0 0;}
+.sp-tracker .stage-label{font-size:10.5px;}
+.sp-price-table input{width:120px; padding:8px; border:1.5px solid var(--sand); border-radius:8px; font:inherit;}
+.sp-price-table td, .sp-price-table th{vertical-align:top;}
+.sp-price-grid{display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:14px;}
+.sp-price-grid label{display:block; font-size:13px; font-weight:600; margin-bottom:10px;}
+.sp-price-grid input[type=number], .sp-price-grid select, .sp-price-grid textarea{width:100%; box-sizing:border-box; padding:9px; border:1.5px solid var(--sand); border-radius:8px; font:inherit; margin-top:4px;}
+.sp-price-grid label.check{display:flex; gap:8px; align-items:center;}
+.sp-price-grid label.check input{width:auto; margin:0;}
+.sp-totals{background:var(--sage-100); border-radius:12px; padding:14px; align-self:start;}
+.sp-totals .fee-row{display:flex; justify-content:space-between; padding:5px 0; font-size:14px;}
+.sp-totals .fee-row.total{border-top:2px solid var(--forest-700); margin-top:6px; padding-top:9px; font-weight:700; font-size:16px;}
+.sp-remark{display:block; margin-top:14px; font-weight:600; font-size:13px;}
+.sp-remark textarea{width:100%; box-sizing:border-box; margin-top:4px; padding:9px; border:1.5px solid var(--sand); border-radius:8px; font:inherit;}
+.ticket-total{text-align:right; font-weight:700; font-size:18px;}
+.ticket-total span{display:block; font-size:11px; color:var(--ink-soft); font-weight:500;}
+@media (max-width:700px){ .sp-price-grid{grid-template-columns:1fr;} .pdf-frame{height:44vh;} }
+
+/* the cost proposal document */
+.proposal-doc{background:#fff; color:#111; padding:26px 28px; border:1px solid var(--sand); border-radius:10px; font-size:13px; line-height:1.45;}
+.pd-head{display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #1d4a34; padding-bottom:10px; margin-bottom:12px;}
+.pd-brand{font-family:Fraunces,Georgia,serif; font-size:20px; font-weight:700; color:#1d4a34;}
+.pd-sub{font-size:11px; color:#666;}
+.pd-title{font-size:18px; font-weight:700; letter-spacing:.08em;}
+.pd-meta{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px 16px; margin-bottom:12px;}
+.pd-meta span, .pd-to span{display:block; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:#666;}
+.pd-to{margin-bottom:10px;}
+.pd-intro{margin:10px 0 6px;}
+.pd-table, .pd-totals{width:100%; border-collapse:collapse;}
+.pd-table th, .pd-table td{border-bottom:1px solid #ddd; padding:6px 6px; text-align:left; vertical-align:top;}
+.pd-table th{background:#f3f1ea; font-size:11px; text-transform:uppercase; letter-spacing:.04em;}
+.pd-table .num, .pd-totals .num{text-align:right; white-space:nowrap;}
+.pd-totals{width:56%; margin:10px 0 0 auto;}
+.pd-totals td{padding:4px 6px;}
+.pd-totals .grand td{border-top:2px solid #111; font-weight:700; font-size:14px; padding-top:7px;}
+.pd-note{margin:10px 0 0; font-size:12px;}
+.pd-sigs{display:grid; grid-template-columns:repeat(3,1fr); gap:18px; margin-top:34px;}
+.pd-sig-line{border-bottom:1px solid #111; min-height:34px; display:flex; flex-direction:column; justify-content:flex-end; font-size:12px;}
+.pd-sig-line span{font-size:10.5px; color:#555;}
+.pd-sig-label{font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:#555; margin-top:3px;}
+.pd-conforme{width:55%; margin-top:30px;}
+#print-root{display:none;}
+@media print{
+  body.printing-proposal > *:not(#print-root){display:none !important;}
+  body.printing-proposal #print-root{display:block !important; position:static;}
+  body.printing-proposal .proposal-doc{border:0; padding:0;}
+}
+
+/* keep the red * on the same line as its label text */
+.auth-form label:has(> .req), .modal-body label:has(> .req){display:block;}
+.auth-form label:has(> .req) > input:not([type=checkbox]), .auth-form label:has(> .req) > select, .auth-form label:has(> .req) > textarea,
+.modal-body label:has(> .req) > input:not([type=checkbox]), .modal-body label:has(> .req) > select, .modal-body label:has(> .req) > textarea{display:block; margin-top:6px; width:100%; box-sizing:border-box;}
+.auth-form select{font-weight:500;}

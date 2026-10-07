@@ -190,7 +190,7 @@ function thumbHTML(segment){
   return `<div class="swatch" style="background:${c.bg}; color:${c.fg}">${svg}</div>`;
 }
 function itemImageHTML(it){
-  if(it.image){ return `<img src="${it.image}" alt="${it.name}" style="width:100%;height:100%;object-fit:cover;">`; }
+  if(it.image){ return `<img src="${it.image}" alt="${it.name}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;">`; }
   return thumbHTML(it.segment);
 }
 
@@ -206,11 +206,13 @@ let VEHICLES = [
 const STAGES = ["Ordered","Confirmed","Acknowledged","Prepared","BTT Assigned","For Delivery","Delivered"];
 const STAGE_INDEX = { new:0, awaiting_ack:1, rejected:1, cancelled:1, preparation:2, ready_for_btt:3, ready_for_dr:4, for_delivery:5, delivered:6 };
 const STATUS_LABEL = {
+  sp_pricing:"For pricing", sp_revision:"For revision", sp_approver1:"With Approver 1", sp_approver2:"With Approver 2", sp_client:"Cost proposal sent",
   new:"New ticket", awaiting_ack:"Waiting for your approval", rejected:"Rejected", cancelled:"Cancelled",
   preparation:"In preparation", ready_for_btt:"Ready for BTT", ready_for_dr:"Ready for DR",
   for_delivery:"Out for delivery", delivered:"Delivered"
 };
 const STATUS_CLASS = {
+  sp_pricing:"status-new", sp_revision:"status-wait", sp_approver1:"status-prep", sp_approver2:"status-prep", sp_client:"status-assigned",
   new:"status-new", awaiting_ack:"status-wait", rejected:"status-rejected", cancelled:"status-rejected",
   preparation:"status-prep", ready_for_btt:"status-progress", ready_for_dr:"status-assigned",
   for_delivery:"status-delivery", delivered:"status-delivered"
@@ -224,6 +226,9 @@ const state = {
   ],
   currentUser: null,
   cart: [], // {itemId, qty}
+  spCart: [], // Special Projects cart: {lineId, itemId, qty, customization, note}
+  spPayMode: "",
+  companies: [], // admin only: company registrations (loaded from the Companies tab)
   orders: [], // tickets — one segment per ticket
   orderSeq: 1,
   townshipsList: [...TOWNSHIPS],
@@ -416,14 +421,16 @@ function checkAvailabilityReleases(){
    that ticket (same DR). Only when the ticket is already out for delivery or
    delivered does the item get its own new ticket and DR. */
 const MERGE_STATUSES = ["new","awaiting_ack","preparation","ready_for_btt","ready_for_dr"];
+function releaseLogId(order, item){ return "AVL-"+order.id+"-"+order.items.indexOf(item); }
+function pushReleaseLog(entry){ if(!state.availabilityLog.some(l=>l.id===entry.id)) state.availabilityLog.push(entry); }
 function mergeProducedItem(order, item){
   item.avail = "available"; item.fromProduction = true; item.producedAt = Date.now();
   const when = fmtDateShort(new Date(item.etaDate+"T00:00:00").getTime());
   const note = `${item.name} × ${item.qty} ${item.oum} came out of production (${when}) and was added to this ticket — it ships on this ticket's DR.`;
   order.adminRemark = order.adminRemark ? order.adminRemark+" "+note : note;
   if(order.drDocUrl) order.drStale = true; // the Google Doc DR was made before this item joined
-  state.availabilityLog.push({
-    id:"AVL-"+Date.now()+"-"+Math.floor(Math.random()*1000), ts:Date.now(),
+  pushReleaseLog({
+    id:releaseLogId(order,item), ts:Date.now(),
     orderId:order.id, newTicketId:order.id, merged:true, itemName:item.name, qty:item.qty,
     township:order.township, segment:order.segment, userEmail:order.userEmail, result:"available"
   });
@@ -442,14 +449,18 @@ function releaseItem(order, item){
     [{ itemId:item.itemId, name:item.name, segment:item.segment, rate:item.rate, oum:item.oum, qty:item.qty, avail:"available" }],
     order.township, order.segment, (order.batchId||order.id)+"-R"
   );
+  // Same id the server uses (parent ticket + "-R" + item number), so if the browser and the server
+  // both notice the item is ready, they write the SAME row instead of creating two tickets.
+  state.orderSeq--; t.id = order.id + "-R" + (order.items.indexOf(item)+1);
+  if(state.orders.some(o=>o.id===t.id)){ item.released = true; item.avail = "released"; item.releasedTo = t.id; return; }
   t.status = "preparation"; t.prepStatus = "ongoing";
   t.confirmedAt = Date.now(); t.ackAt = Date.now();
   t.parentTicket = order.id;
   t.adminRemark = `Auto-released from ${order.id} — item became available on ${fmtDateShort(new Date(item.etaDate+"T00:00:00").getTime())}.`;
   state.orders.push(t);
   item.releasedTo = t.id;
-  state.availabilityLog.push({
-    id:"AVL-"+Date.now()+"-"+Math.floor(Math.random()*1000), ts:Date.now(),
+  pushReleaseLog({
+    id:releaseLogId(order,item), ts:Date.now(),
     orderId:order.id, newTicketId:t.id, itemName:item.name, qty:item.qty,
     township:order.township, segment:order.segment, userEmail:order.userEmail, result:"available"
   });
@@ -579,22 +590,22 @@ function syncToSheets(){
       new Date(o.createdAt).toISOString(), o.deliveredAt?new Date(o.deliveredAt).toISOString():"", o.totalBilled||0]);
   });
   downloadCSV(rows, "cgs-tickets-snapshot.csv");
-  toast(CGS_SHEETS.enabled() ? "CSV snapshot downloaded — live data is already syncing to your connected Sheet." : "CSV snapshot downloaded. Connect a Google Sheet (see sheets-api.js) for live, automatic syncing.");
+  toast(CGS_SHEETS.enabled() ? "CSV snapshot downloaded — live data is already syncing to your connected Sheet." : "CSV snapshot downloaded. Connect a Google Sheet (see config.js) for live, automatic syncing.");
 }
 
 /* ---------------------------- AUTH ----------------------------------------*/
 const authScreen = document.getElementById("auth-screen");
 const appEl = document.getElementById("app");
 
-document.querySelectorAll(".auth-tab").forEach(tab=>{
-  tab.addEventListener("click", ()=>{
-    document.querySelectorAll(".auth-tab").forEach(t=>t.classList.remove("active"));
-    tab.classList.add("active");
-    const mode = tab.dataset.auth;
-    document.getElementById("signin-form").classList.toggle("hidden", mode!=="signin");
-    document.getElementById("signup-form").classList.toggle("hidden", mode!=="signup");
-  });
-});
+function switchAuthTab(mode){
+  document.querySelectorAll(".auth-tab").forEach(t=>t.classList.toggle("active", t.dataset.auth===mode));
+  document.getElementById("signin-form").classList.toggle("hidden", mode!=="signin");
+  document.getElementById("signup-form").classList.toggle("hidden", mode!=="signup");
+  document.getElementById("company-form").classList.toggle("hidden", mode!=="company");
+  if(mode==="signup") populateCompanySelect();
+}
+document.querySelectorAll(".auth-tab").forEach(tab=>tab.addEventListener("click", ()=>switchAuthTab(tab.dataset.auth)));
+document.getElementById("tab-company").classList.toggle("hidden", !CGS_SHEETS.enabled());
 document.getElementById("fill-user").addEventListener("click",()=>{
   document.getElementById("si-email").value="user@megaworldcorp.com";
   document.getElementById("si-password").value="demo";
@@ -646,27 +657,35 @@ function readRememberedSession(){
    server keeps a salted hash privately and hands back a signed token. "Remember
    me" only keeps that token (30 days). With no Sheet connected the app runs on
    the two local demo accounts instead. */
-let bootReady = Promise.resolve(); // set at the bottom; sign-in/up wait for the Sheet to finish loading
-async function ensureSheetLoaded(){
-  if(!CGS_SHEETS.enabled() || CGS_SHEETS.loaded) return true;
-  const ok = await loadFromSheet();
-  if(!ok) toast("Can't reach Google Sheets right now, so accounts can't be checked. Check your connection and try again.", true);
-  return ok;
-}
+let bootReady = Promise.resolve(); // set at the bottom (remembered-session check)
 (function sheetModeHints(){
   const on = CGS_SHEETS.enabled();
   document.getElementById("si-demo-hint").classList.toggle("hidden", on);
   document.getElementById("si-forgot").classList.toggle("hidden", !on);
 })();
 
-function finishSignIn(user, token, remember){
+/* The Sheet's data arrives together with the sign-in answer, already filtered for this person's role. */
+function ingestBundle(data, user){
+  hydrateTownships(data.townships);
+  hydrateFromRemote(data);
+  if(user.role==="admin" && !(data.orders||[]).length && !(data.catalog||[]).length) seedDemoOrders();   // very first run only
+  ensureTownshipInfo();
+  CGS_SHEETS.ingest(data, user.role);
+}
+function finishSignIn(user, token, remember, data){
   CGS_SHEETS.token = token || null;
+  if(data) ingestBundle(data, user);
   if(remember && token){
     ls.set("cgs_session", JSON.stringify({ token, email:user.email, exp: Date.now()+REMEMBER_DAYS*86400000 }));
     ls.set("cgs_last_email", user.email);
   } else { ls.del("cgs_session"); ls.del("cgs_last_email"); }
   login(user);
 }
+async function refreshFromSheet(){
+  const data = await CGS_SHEETS.loadAll(); if(!data || !state.currentUser) return;
+  ingestBundle(data, state.currentUser); render();
+}
+CGS_SHEETS.onDenied = ()=>{ toast("Some changes weren't allowed, so your view was refreshed from the Sheet.", true); refreshFromSheet(); };
 function localDemoUser(email, pass){
   const u = state.users.find(u=>u.email.toLowerCase()===email);
   return (u && u.password===pass) ? u : null;
@@ -705,7 +724,6 @@ document.getElementById("signin-form").addEventListener("submit", async e=>{
   e.preventDefault();
   const btn = e.target.querySelector('button[type="submit"]'); btn.disabled = true;
   try{
-    await bootReady;
     const email = document.getElementById("si-email").value.trim().toLowerCase();
     const pass = document.getElementById("si-password").value;
     const remember = document.getElementById("si-remember").checked;
@@ -714,40 +732,98 @@ document.getElementById("signin-form").addEventListener("submit", async e=>{
       if(!u){ toast("Incorrect email or password.", true); return; }
       finishSignIn(u, null, remember); return;
     }
-    if(!(await ensureSheetLoaded())) return;
     let r;
     try{ r = await CGS_SHEETS.login(email, pass, remember); }
     catch(err){ toast(err.message, true); return; }
     if(r.mustChangePassword){
       const done = await askNewPassword(r.user, pass, remember);
       if(!done) return;
-      finishSignIn(done.user, done.token, remember);
-    } else finishSignIn(r.user, r.token, remember);
+      finishSignIn(done.user, done.token, remember, done.data);
+    } else finishSignIn(r.user, r.token, remember, r.data);
   } finally { btn.disabled = false; }
 });
 document.getElementById("signup-form").addEventListener("submit", async e=>{
   e.preventDefault();
   const btn = e.target.querySelector('button[type="submit"]'); btn.disabled = true;
   try{
-    await bootReady;
     const name = document.getElementById("su-name").value.trim();
     const position = document.getElementById("su-position").value.trim();
     const email = document.getElementById("su-email").value.trim().toLowerCase();
     const password = document.getElementById("su-password").value;
     if(password.length < 8){ toast("Password must be at least 8 characters.", true); return; }
-    let user, token = null;
+    const spVisible = !document.getElementById("su-sp-fields").classList.contains("hidden");
+    const extra = spVisible ? {
+      companyId: document.getElementById("su-company").value,
+      billTo: document.getElementById("su-billto").value.trim(),
+      cpNumber: document.getElementById("su-cp").value.trim()
+    } : {};
+    if(spVisible && !extra.companyId){ toast("Choose your company from the list.", true); return; }
+    let user, token = null, data = null;
     if(CGS_SHEETS.enabled()){
-      if(!(await ensureSheetLoaded())) return;
-      try{ const r = await CGS_SHEETS.registerUser({ name, position, email }, password, false); user = r.user; token = r.token; }
+      try{ const r = await CGS_SHEETS.registerUser({ name, position, email, ...extra }, password, false); user = r.user; token = r.token; data = r.data; }
       catch(err){ toast("Could not create your account: " + err.message, true); return; }
     } else {
       if(state.users.some(u=>u.email.toLowerCase()===email)){ toast("An account with that email already exists.", true); return; }
       user = {name, position, email, password, role:"user", project: email.endsWith("@megaworldcorp.com") ? "megaworld" : "special"};
       state.users.push(user);
     }
-    toast(user.project==="special" ? "Account created. Special Projects access is coming in Phase 2 — signing you in to a limited preview." : "Account created — welcome to CGS Central.");
-    finishSignIn(user, token, false);
+    toast(user.project==="special" ? "Account created — welcome to CGS Central." : "Account created — welcome to CGS Central.");
+    finishSignIn(user, token, false, data);
   } finally { btn.disabled = false; }
+});
+
+/* --- sign-up: extra fields for people outside Megaworld --- */
+function populateCompanySelect(selectedId){
+  const sel = document.getElementById("su-company"); if(!sel) return;
+  const draw = list=>{
+    const keep = selectedId || sel.value;
+    sel.innerHTML = `<option value="">${list.length?"Select your company…":"No companies yet — register yours first"}</option>` +
+      list.map(c=>`<option value="${escAttr(c.id)}">${escAttr(c.name)}${c.status==="pending"?" (Waiting for Admin's Approval)":""}</option>`).join("");
+    if(keep) sel.value = keep;
+  };
+  if(CGS_SHEETS.companies) draw(CGS_SHEETS.companies);
+  else CGS_SHEETS.prefetchCompanies().then(l=>draw(l||[]));
+}
+function toggleSpFields(){
+  const email = document.getElementById("su-email").value.trim().toLowerCase();
+  const show = CGS_SHEETS.enabled() && email.includes("@") && !email.endsWith("@megaworldcorp.com");
+  document.getElementById("su-sp-fields").classList.toggle("hidden", !show);
+  ["su-company","su-billto","su-cp"].forEach(id=>{ document.getElementById(id).required = show; });
+  if(show) populateCompanySelect();
+}
+document.getElementById("su-email").addEventListener("input", toggleSpFields);
+document.getElementById("su-goto-register").addEventListener("click", ()=>switchAuthTab("company"));
+
+/* --- Register a company --- */
+let justRegisteredCompanyId = null;
+document.getElementById("company-form").addEventListener("submit", async e=>{
+  e.preventDefault();
+  const btn = document.getElementById("co-reg-submit");
+  const name = document.getElementById("co-reg-name").value.trim();
+  const address = document.getElementById("co-reg-address").value.trim();
+  const email = document.getElementById("co-reg-email").value.trim();
+  const file = document.getElementById("co-reg-pdf").files[0];
+  if(!file){ toast("Attach the PDF of your BIR Form 2303.", true); return; }
+  if(!(file.type==="application/pdf" || /\.pdf$/i.test(file.name))){ toast("The BIR Form 2303 must be a PDF file.", true); return; }
+  if(file.size > 5*1024*1024){ toast("That PDF is over 5 MB. Please attach a smaller file.", true); return; }
+  btn.disabled = true; btn.textContent = "Submitting…";
+  try{
+    const pdfBase64 = await CGS_SHEETS.fileToBase64(file);
+    const r = await CGS_SHEETS.registerCompany({ name, address, email, pdfName:file.name, pdfBase64 });
+    justRegisteredCompanyId = r.company.id;
+    await CGS_SHEETS.refreshCompanies();
+    document.getElementById("co-reg-done-title").textContent = "Registration received";
+    document.getElementById("co-reg-done-msg").textContent = `${name} is now waiting for admin approval. We'll email the result to ${email}. You can already create your account — choose your company from the list (it shows as "Waiting for Admin's Approval" until confirmed).`;
+    document.getElementById("co-reg-done").classList.remove("hidden");
+    btn.classList.add("hidden");
+  }catch(err){ toast(err.message, true); }
+  finally{ btn.disabled = false; btn.textContent = "Submit registration"; }
+});
+document.getElementById("co-reg-to-signup").addEventListener("click", ()=>{
+  switchAuthTab("signup");
+  const form = document.getElementById("company-form"); form.reset();
+  document.getElementById("co-reg-done").classList.add("hidden"); document.getElementById("co-reg-submit").classList.remove("hidden");
+  populateCompanySelect(justRegisteredCompanyId);
 });
 
 /* ---------------------------- MENU: floating hamburger + collapsible sidebar -
@@ -779,6 +855,19 @@ function onBreakpoint(){
 }
 onBreakpoint();
 
+/* little "saving…/saved" dot in the top bar */
+(function(){
+  const el = document.getElementById("sync-status"); if(!el) return;
+  const text = { saving:"Saving…", saved:"Saved", error:"Offline — retrying" };
+  CGS_SHEETS.onStatus = st=>{
+    el.dataset.state = st; el.classList.toggle("hidden", !CGS_SHEETS.enabled());
+    el.querySelector(".sync-text").textContent = text[st] || "";
+    el.title = text[st] || "";
+  };
+  el.classList.toggle("hidden", !CGS_SHEETS.enabled());
+})();
+
+const ROLE_LABEL = { admin:"CGS Admin", approver1:"Approver 1", approver2:"Approver 2", user:"Requester" };
 function login(u){
   state.currentUser = u;
   authScreen.classList.add("hidden");
@@ -786,20 +875,26 @@ function login(u){
   document.getElementById("who-name").textContent = u.name;
   document.getElementById("topbar-name").textContent = u.name;
   appEl.classList.remove("menu-open"); syncMenuAria();
-  document.getElementById("who-role").textContent = u.role==="admin" ? "CGS Admin · "+u.project : "Requester · "+u.project;
-  const isAdmin = u.role==="admin";
-  document.getElementById("nav-user").classList.toggle("hidden", isAdmin);
+  const isAdmin = u.role==="admin", isAppr = isApprover(u), isSP = isSPUser(u);
+  document.getElementById("who-role").textContent = isSP ? (ROLE_LABEL.user+" · "+(u.company||"Special Projects")) : (ROLE_LABEL[u.role]||"Requester")+" · "+u.project;
+  document.getElementById("nav-user").classList.toggle("hidden", isAdmin || isAppr || isSP);
+  document.getElementById("nav-sp").classList.toggle("hidden", !isSP);
+  document.getElementById("nav-approver").classList.toggle("hidden", !isAppr);
   document.getElementById("nav-admin").classList.toggle("hidden", !isAdmin);
-  document.getElementById("open-cart-btn").classList.toggle("hidden", isAdmin);
-  navigate(isAdmin ? "a-overview" : "u-dashboard");
+  document.getElementById("open-cart-btn").classList.toggle("hidden", isAdmin || isAppr);
+  if(isAdmin && CGS_SHEETS.enabled()) loadCompaniesAdmin();
+  navigate(isAdmin ? "a-overview" : isAppr ? "p-queue" : "u-dashboard");
 }
-function signOut(){
+async function signOut(){
+  const flush = CGS_SHEETS.saveNow(snapshotState).catch(()=>{});           // push anything unsaved while the token is still valid
   ls.del("cgs_session"); resetPasswordFields();
-  CGS_SHEETS.token = null;
-  state.currentUser = null; state.cart = [];
   appEl.classList.remove("menu-open"); syncMenuAria();
   appEl.classList.add("hidden");
   authScreen.classList.remove("hidden");
+  await Promise.race([flush, new Promise(r=>setTimeout(r, 4000))]);
+  CGS_SHEETS.token = null; CGS_SHEETS.loaded = false; CGS_SHEETS.canWrite = {}; CGS_SHEETS._getPayload = null; CGS_SHEETS._pending = false;
+  state.currentUser = null; state.cart = []; state.spCart = []; state.spPayMode = ""; state.orders = []; state.availabilityLog = []; state.companies = [];
+  updateCartBadge();
 }
 document.getElementById("logout-btn").addEventListener("click", signOut);
 document.getElementById("topbar-logout").addEventListener("click", signOut);
@@ -811,7 +906,9 @@ const viewTitles = {
   "a-prep":"Preparation of Orders", "a-btt":"BTT Assignment", "a-dr":"DR Generator",
   "a-delivery":"For Delivery", "a-delivered":"Delivered Items", "a-history":"Overall Delivery History",
   "a-edit":"Edit Orders", "a-vehicles":"Vehicle Summary", "a-item-summary":"Item Summary",
-  "a-items":"Items & Pricing", "a-availability":"Availability Watch", "a-townships":"Township Addresses", "a-users":"Users & Passwords"
+  "a-items":"Items & Pricing", "a-availability":"Availability Watch", "a-townships":"Township Addresses", "a-users":"Users & Passwords",
+  "a-companies":"Company registrations", "a-sp-pricing":"Special Projects — Pricing", "a-sp-proposals":"Cost proposals",
+  "u-proposals":"Cost proposals", "p-queue":"For my approval", "p-history":"My decisions"
 };
 let currentView = "u-dashboard";
 function navigate(view){
@@ -844,13 +941,16 @@ function setCartQty(itemId, qty){
   updateCartBadge();
 }
 function updateCartBadge(){
-  const count = state.cart.reduce((s,c)=>s+c.qty,0);
+  const count = isSPUser() ? state.spCart.reduce((s,c)=>s+c.qty,0) : state.cart.reduce((s,c)=>s+c.qty,0);
   const el = document.getElementById("cart-count");
   el.textContent = count;
   el.classList.toggle("zero", count===0);
 }
 function renderCart(){
   const wrap = document.getElementById("cart-items");
+  document.querySelector(".cart-total-row").classList.toggle("hidden", isSPUser());
+  document.getElementById("checkout-btn").textContent = isSPUser() ? "Submit for cost proposal" : "Proceed to checkout";
+  if(isSPUser()){ renderSpCart(); return; }
   if(state.cart.length===0){
     wrap.innerHTML = `<div class="empty-state"><h4>Your cart is empty</h4><p>Head to the Shop tab to add signages, plants and more.</p></div>`;
   } else {
@@ -885,6 +985,7 @@ function renderCart(){
 function renderIfShop(){ if(currentView==="u-shop") render(); }
 
 document.getElementById("checkout-btn").addEventListener("click", ()=>{
+  if(isSPUser()){ openSpSubmit(); return; }
   if(state.cart.length===0) return;
   const sel = document.getElementById("co-township");
   sel.innerHTML = state.townshipsList.map(t=>`<option>${t}</option>`).join("");
@@ -936,7 +1037,24 @@ function render(){
   afterRender(currentView);
   CGS_SHEETS.scheduleSave(snapshotState);
 }
+function setPill(id, n){ const el = document.getElementById(id); if(el){ el.textContent = n; el.classList.toggle("zero", n===0); } }
+function updateSpCounts(){
+  const u = state.currentUser; if(!u) return;
+  if(u.role==="admin"){
+    setPill("c-sp-pricing", state.orders.filter(o=>isSPOrder(o) && SP_PRICING_STATUSES.includes(o.status)).length);
+    setPill("c-companies", state.companies.filter(c=>c.status==="pending").length);
+  }
+  if(isApprover(u)){
+    const want = u.role==="approver1" ? "sp_approver1" : "sp_approver2";
+    setPill("c-approval", state.orders.filter(o=>o.status===want).length);
+  }
+  if(isSPUser(u)){
+    setPill("sp-proposal-count", state.orders.filter(o=>isSPOrder(o) && o.userEmail===u.email && o.status==="sp_client").length);
+    setPill("sp-confirm-count", state.orders.filter(o=>o.userEmail===u.email && o.status==="for_delivery").length);
+  }
+}
 function updateAdminCounts(){
+  updateSpCounts();
   const el = document.getElementById("c-new");
   if(el){ const n = state.orders.filter(o=>o.status==="new").length; el.textContent=n; el.classList.toggle("zero", n===0); }
   const pEl = document.getElementById("c-prod");
@@ -960,8 +1078,9 @@ function updateAckCount(){
 
 /* ---------------------------- STAGE TRACKER --------------------------------*/
 function stageTracker(order){
-  const cur = isVoidOrder(order) ? -1 : STAGE_INDEX[order.status];
-  return `<div class="stage-tracker">${STAGES.map((label,i)=>{
+  const sp = isSPOrder(order), stages = sp ? SP_STAGES : STAGES;
+  const cur = isVoidOrder(order) ? -1 : (sp ? SP_STAGE_INDEX[order.status] : STAGE_INDEX[order.status]);
+  return `<div class="stage-tracker ${sp?"sp-tracker":""}">${stages.map((label,i)=>{
     const done = !isVoidOrder(order) && i<cur;
     const isCurrent = i===cur;
     return `${i>0?`<div class="stage-line ${i<=cur?'done':''}"></div>`:""}
@@ -981,6 +1100,7 @@ function timelineHTML(o){
   return `<div class="ticket-timeline">${rows.map(r=>`<div class="tl-row">${r}</div>`).join("")}</div>`;
 }
 function ticketMetaBadges(o){
+  if(isSPOrder(o)) return `<span class="type-badge SP">SPECIAL</span>`;
   return `<span class="type-badge ${o.deliveryType}">TYPE ${o.deliveryType}</span> ${o.noBtt?'<span class="nobtt-badge">NO BTT</span>':''}`;
 }
 
@@ -990,6 +1110,7 @@ function ticketMetaBadges(o){
 function myOrders(){ return state.orders.filter(o=>o.userEmail===state.currentUser.email).sort((a,b)=>b.createdAt-a.createdAt); }
 
 function viewUserDashboard(){
+  if(isSPUser()) return viewSpDashboard();
   const orders = myOrders();
   const ongoing = orders.filter(o=>!["delivered","rejected","cancelled"].includes(o.status)).length;
   const delivered = orders.filter(o=>o.status==="delivered").length;
@@ -1012,6 +1133,7 @@ function viewUserDashboard(){
 }
 
 function orderCardUser(o){
+  if(isSPOrder(o)) return spOrderCardUser(o);
   return `<div class="ticket-card">
     <div class="ticket-top">
       <div>
@@ -1035,7 +1157,7 @@ function orderCardUser(o){
 function viewUserShop(){
   return `
   <div class="view-head">
-    <div><h2>Shop CGS items</h2><p>Search, add to cart and check out — just like ordering online. Items from different segments become separate tickets.</p></div>
+    <div><h2>Shop CGS items</h2><p>${isSPUser()?"Pick what you need and tell us any customization or special request. CGS will send you a cost proposal — prices are quoted per project.":"Search, add to cart and check out — just like ordering online. Items from different segments become separate tickets."}</p></div>
   </div>
   <div class="shop-toolbar">
     <input class="search-input" id="shop-search" placeholder="Search items…" value="${shopState.q}" />
@@ -1052,6 +1174,18 @@ function renderItemGrid(){
     it.name.toLowerCase().includes(shopState.q.toLowerCase())
   );
   if(items.length===0) return emptyState("No items match","Try a different search or category.");
+  if(isSPUser()) return items.map(it=>{
+    const inCart = state.spCart.filter(l=>l.itemId===it.id).reduce((s,l)=>s+l.qty,0);
+    return `<div class="item-card">
+      <div class="item-thumb">${itemImageHTML(it)}</div>
+      <div class="item-body">
+        <div class="item-segment">${it.segment}</div>
+        <div class="item-name">${it.name}</div>
+        <div class="item-oum muted" style="font-size:12px;">per ${it.oum} · price quoted by CGS</div>
+        <div class="item-foot"><button class="add-btn ${inCart?'added':''}" data-sp-add="${it.id}">${inCart?`In cart (${inCart}) · add another`:"Add to cart"}</button></div>
+      </div>
+    </div>`;
+  }).join("");
   return items.map(it=>{
     const qty = cartQty(it.id);
     return `<div class="item-card">
@@ -1078,6 +1212,7 @@ function refreshAdvNote(id){
   if(it && el) el.textContent = advanceNote(it, draftQty[id]||cartQty(id)||1, true);
 }
 function afterRenderShop(){
+  document.querySelectorAll("[data-sp-add]").forEach(b=>b.addEventListener("click", ()=>openSpAddModal(b.dataset.spAdd)));
   document.getElementById("shop-search").addEventListener("input", e=>{ shopState.q=e.target.value; document.getElementById("item-grid").innerHTML = renderItemGrid(); afterRenderShop(); });
   document.querySelectorAll("[data-seg]").forEach(b=>b.addEventListener("click", ()=>{ shopState.segment=b.dataset.seg; render(); }));
   document.querySelectorAll("[data-shop-inc]").forEach(b=>b.addEventListener("click", ()=>{
@@ -1120,8 +1255,8 @@ function afterRenderUser(){
   }));
   document.querySelectorAll("[data-cancel-order]").forEach(b=>b.addEventListener("click", ()=>{
     const o = state.orders.find(o=>o.id===b.dataset.cancelOrder);
-    if(!o || !["new","awaiting_ack"].includes(o.status)) return;
-    if(!confirm(`Cancel ticket ${o.id}? Any stock set aside for it will be released.`)) return;
+    if(!o || !["new","awaiting_ack","sp_pricing","sp_revision","sp_approver1","sp_approver2","sp_client"].includes(o.status)) return;
+    if(!confirm(`Cancel ticket ${o.id}?${isSPOrder(o)?"":" Any stock set aside for it will be released."}`)) return;
     const back = releaseOrderStock(o);
     o.status = "cancelled"; o.cancelledAt = Date.now(); o.cancelledBy = "requester";
     o.adminRemark = "Cancelled by the requester.";
@@ -1149,7 +1284,7 @@ function viewAdminOverview(){
   const totalSales = orders.reduce((s,o)=>s+orderTotal(o),0);
   return `
   <div class="view-head"><div><h2>CGS operations overview</h2><p>Live status across the order-to-delivery pipeline.</p>
-      <p class="muted" style="font-size:12px;margin-top:6px;">${CGS_SHEETS.enabled() ? "🟢 Connected to Google Sheets — changes save automatically." : "⚪ Not connected to Google Sheets — running on local demo data. Add your Apps Script Web App URL in sheets-api.js to enable live persistence."}</p>
+      <p class="muted" style="font-size:12px;margin-top:6px;">${CGS_SHEETS.enabled() ? "🟢 Connected to Google Sheets — changes save automatically." : "⚪ Not connected to Google Sheets — running on local demo data. Add your Apps Script Web App URL in config.js to enable live persistence."}</p>
     </div>
     <button class="btn btn-ghost btn-sm" id="sync-sheets-btn">⇄ Export snapshot (.csv)</button>
   </div>
@@ -1202,12 +1337,12 @@ function orderCardAdmin(o, actionsHTML){
       <div>
         <div class="ticket-id">${o.id} · ${o.segment} ${ticketMetaBadges(o)} · ${fmtDate(o.createdAt)}</div>
         <div class="ticket-title">${o.userName} <span class="muted">— ${o.userPosition}</span></div>
-        <div class="ticket-meta">${o.township} · ${o.items.length} item type(s) · ${peso(orderTotal(o))}${o.drNumber?` · DR ${o.drNumber}`:""}</div>
+        <div class="ticket-meta">${o.township} · ${o.items.length} item type(s) · ${isSPOrder(o) ? spMoneyLabel(o) : peso(orderTotal(o))}${o.drNumber?` · DR ${o.drNumber}`:""}</div>
       </div>
       <span class="status-badge ${STATUS_CLASS[o.status]}">${o.late?"Late delivery":STATUS_LABEL[o.status]}</span>
     </div>
     <div class="ticket-items">
-      ${o.items.map(i=>`<div class="ticket-item-row"><span>${i.name} × ${i.qty} ${i.oum}</span><span>${itemAvailLabel(i)}</span></div>`).join("")}
+      ${isSPOrder(o) ? spItemRowsHTML(o) : o.items.map(i=>`<div class="ticket-item-row"><span>${i.name} × ${i.qty} ${i.oum}</span><span>${itemAvailLabel(i)}</span></div>`).join("")}
     </div>
     ${timelineHTML(o)}
     ${feeSummaryHTML(o)}
@@ -1373,14 +1508,14 @@ function mergeDrLines(lines){
 }
 /* Everything the Google Doc needs — name, address, date, items and numbers come from the order. */
 function drPayload(o){
-  const info = townshipDetails(o.township);
+  const info = isSPOrder(o) ? { legalName:o.company||o.township, address:o.deliveryAddress||"" } : townshipDetails(o.township);
   let dateStr;
   const d = o.deliveryDate ? String(o.deliveryDate).slice(0,10) : "";
   if(/^\d{4}-\d{2}-\d{2}$/.test(d)){ const [y,m,dd] = d.split("-"); dateStr = `${m}/${dd}/${y}`; }
   else { const n = new Date(); dateStr = String(n.getMonth()+1).padStart(2,"0")+"/"+String(n.getDate()).padStart(2,"0")+"/"+n.getFullYear(); }
   return {
     orderId:o.id, drNumber:o.drNumber, township: info.legalName || o.township, address: info.address || "", date: dateStr,
-    items: mergeDrLines(o.items.filter(i=>i.avail==="available")),
+    items: isSPOrder(o) ? o.items.map(i=>({ name:i.name+(i.customization?" ("+i.customization+")":""), qty:Number(i.qty)||0, unit:i.oum, status:"COMPLETE" })) : mergeDrLines(o.items.filter(i=>i.avail==="available")),
     bttNumber: o.noBtt ? null : (o.bttNumber||null), iomNumber: o.iomNumber || ""
   };
 }
@@ -1398,8 +1533,8 @@ function viewAdminDR(){
       </div>
       <div class="dr-grid">
         <div><span>Ordered by</span>${o.userName} — ${o.userPosition}</div>
-        <div><span>Township</span>${o.township}</div>
-        <div><span>Address</span>${townshipDetails(o.township).address||'<em class="muted">No address yet — add it under Township Addresses</em>'}</div>
+        <div><span>${isSPOrder(o)?"Company":"Township"}</span>${o.township}</div>
+        <div><span>Address</span>${(isSPOrder(o)?o.deliveryAddress:townshipDetails(o.township).address)||'<em class="muted">No address yet — add it under Township Addresses</em>'}</div>
         <div><span>Vehicle</span>${vehicle?vehicle.name+" — "+vehicle.driver:"—"}</div>
         <div><span>Delivery date</span>${fmtDateShort(new Date(o.deliveryDate).getTime())}</div>
       </div>
@@ -1407,7 +1542,7 @@ function viewAdminDR(){
         <input value="${o.iomNumber||''}" data-iom="${o.id}" placeholder="e.g. IOM-08-2026" style="width:100%;margin-top:4px;padding:8px 10px;border:1.5px solid var(--sand);border-radius:8px;font-family:inherit;" />
       </label>
       <div class="ticket-items">
-        ${o.items.filter(i=>i.avail==='available').map(i=>`<div class="ticket-item-row"><span>${i.name} × ${i.qty} ${i.oum}</span><span>${peso(i.rate*i.qty)}</span></div>`).join("")}
+        ${o.items.filter(i=>i.avail==='available').map(i=>`<div class="ticket-item-row"><span>${i.name} × ${i.qty} ${i.oum}</span><span>${isSPOrder(o)?"":peso(i.rate*i.qty)}</span></div>`).join("")}
       </div>
       ${o.drStale?`<div class="remark-box"><strong>DR needs updating:</strong> an item came out of production after this DR was created. Regenerate it so it lists everything before you send it out.</div>`:""}
       <div class="ticket-actions">
@@ -1639,7 +1774,7 @@ function openEditOrderModal(orderId){
         <label>BTT number <input id="eo-btt" value="${o.noBtt?'':(o.bttNumber||'')}" ${o.noBtt?'placeholder="No BTT required"':''}/></label>
         <label>Delivery date <input type="date" id="eo-date" value="${o.deliveryDate||''}"/></label>
       </div>
-      <label>Township <select id="eo-township">${TOWNSHIPS.map(t=>`<option ${o.township===t?'selected':''}>${t}</option>`).join("")}</select></label>
+      ${isSPOrder(o) ? `<label>Company <input id="eo-township" value="${escAttr(o.township)}" disabled /></label>` : `<label>Township <select id="eo-township">${TOWNSHIPS.map(t=>`<option ${o.township===t?'selected':''}>${t}</option>`).join("")}</select></label>`}
       <label>Status <select id="eo-status">${statusOptions.map(s=>`<option value="${s}" ${o.status===s?'selected':''}>${STATUS_LABEL[s]}</option>`).join("")}</select></label>
       <label>Admin remarks <textarea id="eo-remark" rows="2">${o.adminRemark||''}</textarea></label>
     </div>
@@ -1651,7 +1786,7 @@ function openEditOrderModal(orderId){
     const bttVal = document.getElementById("eo-btt").value.trim();
     o.bttNumber = bttVal || null; o.noBtt = !bttVal && o.noBtt;
     o.deliveryDate = document.getElementById("eo-date").value || null;
-    o.township = document.getElementById("eo-township").value;
+    if(!isSPOrder(o)) o.township = document.getElementById("eo-township").value;
     const prevStatus = o.status;
     o.status = document.getElementById("eo-status").value;
     if(isVoidOrder(o) && !isVoidOrder({status:prevStatus})) releaseOrderStock(o); // cancelled/rejected here => stock goes back
@@ -1868,8 +2003,8 @@ function afterRenderAdminItems(){
    their next sign-in. */
 const usersView = { list:null, error:null };
 function viewAdminUsers(){
-  const head = `<div class="view-head"><div><h2>Users &amp; passwords</h2><p>Everyone who can sign in. Reset a password to give someone a temporary one — they must choose a new password the next time they sign in.</p></div>${CGS_SHEETS.enabled()?`<button class="btn btn-ghost btn-sm" id="users-refresh">Refresh</button>`:""}</div>`;
-  if(!CGS_SHEETS.enabled()) return head + emptyState("Connect Google Sheets","Accounts are stored in your Google Sheet. Add your Web App URL in sheets-api.js to manage them here.");
+  const head = `<div class="view-head"><div><h2>Users &amp; passwords</h2><p>Everyone who can sign in. Reset a password to give someone a temporary one — they must choose a new password the next time they sign in.</p></div>${CGS_SHEETS.enabled()?`<button class="btn btn-primary btn-sm" id="staff-add">Add staff account</button> <button class="btn btn-ghost btn-sm" id="users-refresh">Refresh</button>`:""}</div>`;
+  if(!CGS_SHEETS.enabled()) return head + emptyState("Connect Google Sheets","Accounts are stored in your Google Sheet. Add your Web App URL in config.js to manage them here.");
   return head + `<div id="users-table">${usersTableHTML()}</div>`;
 }
 function usersTableHTML(){
@@ -1877,10 +2012,11 @@ function usersTableHTML(){
   if(!usersView.list) return `<p class="muted">Loading accounts…</p>`;
   const me = String(state.currentUser.email).toLowerCase();
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Name</th><th>Position</th><th>Email</th><th>Role</th><th>Project</th><th>Password</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Position</th><th>Email</th><th>Company / CP</th><th>Role</th><th>Password</th><th></th></tr></thead>
     <tbody>${usersView.list.map(u=>`<tr>
       <td>${escAttr(u.name)}</td><td>${escAttr(u.position||"—")}</td><td>${escAttr(u.email)}</td>
-      <td>${u.role==="admin"?"Admin":"Requester"}</td><td>${escAttr(u.project||"—")}</td>
+      <td>${u.company?`${escAttr(u.company)}<div class="muted" style="font-size:11.5px;">${escAttr(u.cpNumber||"")}${u.billTo?` · bill: ${escAttr(u.billTo)}`:""}</div>`:`<span class="muted">${escAttr(u.project||"—")}</span>`}</td>
+      <td>${String(u.email).toLowerCase()===me ? ROLE_LABEL[u.role] : `<select data-role-for="${escAttr(u.email)}" aria-label="Role for ${escAttr(u.name)}">${["user","admin","approver1","approver2"].map(r=>`<option value="${r}" ${u.role===r?"selected":""}>${ROLE_LABEL[r]}</option>`).join("")}</select>`}</td>
       <td style="font-size:12px;">${escAttr(u.pwStatus||"—")}</td>
       <td>${String(u.email).toLowerCase()===me ? `<span class="muted" style="font-size:12px;">You</span>` : `<button class="btn btn-ghost btn-sm" data-reset-pw="${escAttr(u.email)}" data-name="${escAttr(u.name)}">Reset password</button>`}</td>
     </tr>`).join("")}</tbody></table></div>`;
@@ -1892,7 +2028,28 @@ async function loadUsersList(){
   if(el){ el.innerHTML = usersTableHTML(); bindUsersTable(); }
 }
 function bindUsersTable(){
+  document.querySelectorAll("[data-role-for]").forEach(sel=>sel.addEventListener("change", async ()=>{
+    const email = sel.dataset.roleFor, u = usersView.list.find(x=>x.email===email), role = sel.value;
+    if(!confirm(`Make ${u.name} a ${ROLE_LABEL[role]}?`)){ sel.value = u.role; return; }
+    try{ await CGS_SHEETS.setRole(email, role); u.role = role; toast(`${u.name} is now ${ROLE_LABEL[role]}.`); }
+    catch(err){ toast(err.message, true); sel.value = u.role; }
+  }));
+  const add = document.getElementById("staff-add"); if(add) add.onclick = openStaffModal;
   document.querySelectorAll("[data-reset-pw]").forEach(b=>b.addEventListener("click", ()=>doResetPassword(b.dataset.resetPw, b.dataset.name)));
+}
+function openStaffModal(){
+  showSpModal("Add a staff account", `<p class="muted" style="margin:0 0 8px;">For CGS admins and approvers. They get a temporary password and choose their own at first sign-in.</p>
+    <label>Full name <span class="req">*</span><input id="st-name" /></label><label>Position<input id="st-pos" /></label>
+    <label>Email <span class="req">*</span><input type="email" id="st-email" /></label>
+    <label>Role <select id="st-role"><option value="approver1">Approver 1</option><option value="approver2">Approver 2</option><option value="admin">CGS Admin</option></select></label>`,
+    `<button class="btn btn-ghost" data-sp-close>Cancel</button><button class="btn btn-primary" id="st-save">Create account</button>`, { narrow:true });
+  document.getElementById("st-save").addEventListener("click", async ()=>{
+    const v = id=>document.getElementById(id).value.trim();
+    try{
+      const r = await CGS_SHEETS.createStaff({ name:v("st-name"), position:v("st-pos"), email:v("st-email"), role:v("st-role") });
+      closeSpModal(); showTempPassword(r.user.name, r.user.email, r.tempPassword); loadUsersList();
+    }catch(err){ toast(err.message, true); }
+  });
 }
 async function doResetPassword(email, name){
   if(!confirm(`Reset the password for ${name} (${email})?\n\nThey will be signed out everywhere and given a temporary password to replace at their next sign-in.`)) return;
@@ -2011,11 +2168,18 @@ const VIEWS = {
   "a-prep": viewAdminPrep, "a-btt": viewAdminBTT, "a-dr": viewAdminDR,
   "a-delivery": viewAdminDelivery, "a-delivered": viewAdminDelivered, "a-history": viewAdminHistory,
   "a-edit": viewAdminEdit, "a-vehicles": viewAdminVehicles, "a-item-summary": viewAdminItemSummary,
-  "a-items": viewAdminItems, "a-availability": viewAdminAvailability, "a-townships": viewAdminTownships, "a-users": viewAdminUsers
+  "a-items": viewAdminItems, "a-availability": viewAdminAvailability, "a-townships": viewAdminTownships, "a-users": viewAdminUsers,
+  "a-companies": viewAdminCompanies, "a-sp-pricing": viewAdminSpPricing, "a-sp-proposals": viewAdminSpProposals,
+  "u-proposals": viewUserProposals, "p-queue": viewApproverQueue, "p-history": viewApproverHistory
 };
 function afterRender(view){
   if(view==="u-shop") afterRenderShop();
   if(view==="u-dashboard" || view==="u-ack" || view==="u-confirm") afterRenderUser();
+  if(view==="u-dashboard" || view==="u-proposals") afterRenderSpClient();
+  if(view==="a-companies") afterRenderAdminCompanies();
+  if(view==="a-sp-pricing") afterRenderAdminSpPricing();
+  if(view==="a-sp-proposals") afterRenderAdminSpProposals();
+  if(view==="p-queue" || view==="p-history") afterRenderApprover();
   if(view==="a-overview") afterRenderAdminOverview();
   if(view==="a-new") afterRenderAdminNew();
   if(view==="a-prep") afterRenderAdminPrep();
@@ -2031,6 +2195,570 @@ function afterRender(view){
   if(view==="a-users") afterRenderAdminUsers();
   if(view==="a-availability") afterRenderAdminAvailability();
   maybeShowAvailabilityNotice();
+}
+
+/* ============================================================
+   SPECIAL PROJECTS — clients outside Megaworld
+   Company registers (BIR 2303) -> admin approves -> staff order WITHOUT prices ->
+   admin prices it -> cost proposal -> Approver 1 -> Approver 2 -> client signs ->
+   the usual scheduling / BTT / DR / delivery steps -> ticket closed.
+   ============================================================ */
+const SP_STAGES = ["Submitted","Pricing","Approver 1","Approver 2","Signed copy","Preparation","Scheduling & DR","Out for delivery","Delivered"];
+const SP_STAGE_INDEX = { sp_pricing:1, sp_revision:1, sp_approver1:2, sp_approver2:3, sp_client:4, preparation:5, ready_for_btt:6, ready_for_dr:6, for_delivery:7, delivered:8 };
+const SP_PRICING_STATUSES = ["sp_pricing","sp_revision"];
+const SP_PAY_MODES = ["Bank transfer","Check"];
+const VAT_RATE = 0.12;
+const round2 = n => Math.round((Number(n)||0)*100)/100;
+const esc = v => escAttr(v);
+function isSPOrder(o){ return !!o && o.flow==="sp"; }
+function isSPUser(u){ u = u || state.currentUser; return !!u && u.role==="user" && u.project==="special"; }
+function isApprover(u){ u = u || state.currentUser; return !!u && (u.role==="approver1" || u.role==="approver2"); }
+function cpNumberFor(o){ return "CP-" + String(o.id).replace(/^TCK-/,""); }
+function clientSeesProposal(o){ return !!(o.proposal && o.proposal.sentAt); }
+function isStaffView(){ return !!state.currentUser && state.currentUser.role!=="user"; }
+function spItemNotesHTML(i){
+  return (i.customization ? `<div class="sp-note">Customization: ${esc(i.customization)}</div>` : "") + (i.note ? `<div class="sp-note">Special request: ${esc(i.note)}</div>` : "");
+}
+function spItemRowsHTML(o){
+  const showPrice = isStaffView() ? true : clientSeesProposal(o);
+  return o.items.map(i=>`<div class="ticket-item-row"><span>${esc(i.name)} × ${esc(i.qty)} ${esc(i.oum)}${spItemNotesHTML(i)}</span><span>${showPrice && i.rate ? peso(i.rate*i.qty) : ""}</span></div>`).join("");
+}
+function spMoneyLabel(o){
+  if(!o.proposal) return isStaffView() ? "Not priced yet" : "Pricing in progress";
+  if(!isStaffView() && !clientSeesProposal(o)) return "Pricing in progress";
+  return `Total ${peso(o.proposal.totals.total)} (incl. 12% VAT)`;
+}
+function showSpModal(title, body, foot, opts){
+  const panel = document.getElementById("sp-modal-panel");
+  panel.className = "modal-panel" + ((opts && opts.narrow) ? "" : " modal-wide");
+  panel.innerHTML = `<div class="modal-head"><h3>${title}</h3><button class="icon-btn" data-sp-close aria-label="Close">✕</button></div><div class="modal-body">${body}</div>${foot?`<div class="modal-foot">${foot}</div>`:""}`;
+  panel.querySelectorAll("[data-sp-close]").forEach(b=>b.addEventListener("click", closeSpModal));
+  openModal("sp-modal");
+  return panel;
+}
+let spBlobUrl = null;
+function closeSpModal(){
+  closeModal("sp-modal");
+  const f = document.getElementById("sp-modal-panel").querySelector("iframe"); if(f) f.src = "about:blank";
+  if(spBlobUrl){ URL.revokeObjectURL(spBlobUrl); spBlobUrl = null; }
+}
+document.querySelector('[data-close="sp-modal"]').addEventListener("click", closeSpModal);
+function base64ToBlobUrl(b64, mime){
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  if(spBlobUrl) URL.revokeObjectURL(spBlobUrl);
+  spBlobUrl = URL.createObjectURL(new Blob([bytes], { type:mime }));
+  return spBlobUrl;
+}
+function reportNotify(r, who){
+  if(!r){ toast("Saved, but the e-mail notification couldn't be sent.", true); return; }
+  if(r.duplicate) return;
+  if(r.recipients===0) toast(`Saved — but no ${who} account exists yet to notify. Add one under Users & passwords.`, true);
+  else if(!r.sent) toast(`Saved — but the e-mail to ${who} couldn't be sent.`, true);
+}
+function saveThenNotify(o, kind, who){
+  return CGS_SHEETS.saveNow(snapshotState).then(()=>CGS_SHEETS.notify(o.id, kind)).then(r=>reportNotify(r, who)).catch(()=>{});
+}
+
+/* ---------- the cost proposal document (what approvers and clients read, and what gets printed) ---------- */
+function spTotals(lines, mode, val, withDF, df){
+  const subtotal = round2(lines.reduce((s,l)=>s + (Number(l.qty)||0)*(Number(l.price)||0), 0));
+  let discount = mode==="percent" ? subtotal*(Number(val)||0)/100 : mode==="amount" ? (Number(val)||0) : 0;
+  discount = Math.min(round2(discount), subtotal);
+  const dfAmount = withDF ? round2(df) : 0;
+  const base = round2(subtotal - discount + dfAmount);
+  const vat = round2(base*VAT_RATE);
+  return { subtotal, discount, dfAmount, base, vat, total: round2(base+vat) };
+}
+function proposalDocHTML(o){
+  const p = o.proposal, t = p.totals, to = o.proposalTo || {};
+  const rows = o.items.map((i,n)=>`<tr><td>${n+1}</td><td><strong>${esc(i.name)}</strong>${spItemNotesHTML(i)}</td><td class="num">${esc(i.qty)}</td><td>${esc(i.oum)}</td><td class="num">${peso(i.rate)}</td><td class="num">${peso(i.rate*i.qty)}</td></tr>`).join("");
+  const sig = (a,label)=>`<div class="pd-sig"><div class="pd-sig-line">${a && a.status==="approved" ? `<strong>${esc(a.by)}</strong><span>${fmtDateShort(a.at)}</span>` : "&nbsp;"}</div><div class="pd-sig-label">${label}</div></div>`;
+  return `<div class="proposal-doc">
+    <div class="pd-head"><div><div class="pd-brand">Central Group Services</div><div class="pd-sub">CGS Central</div></div><div class="pd-title">COST PROPOSAL</div></div>
+    <div class="pd-meta">
+      <div><span>Proposal no.</span>${esc(p.no)}${p.rev?` · Rev ${p.rev}`:""}</div>
+      <div><span>Date</span>${fmtDateShort(p.sentAt || p.preparedAt)}</div>
+      <div><span>Payment mode</span>${esc(o.payMode||"—")}</div>
+      <div><span>Bill to</span>${esc(o.billTo||"—")}</div>
+    </div>
+    <div class="pd-to"><span>To</span><strong>${esc(to.name)}</strong>${to.position?`, ${esc(to.position)}`:""}<br>${esc(o.company||"")}<br>${esc(to.address||"")}</div>
+    <p class="pd-intro">We are pleased to submit our cost proposal for the following:</p>
+    <table class="pd-table"><thead><tr><th>#</th><th>Item / details</th><th class="num">Qty</th><th>Unit</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead><tbody>${rows}</tbody></table>
+    <table class="pd-totals"><tbody>
+      <tr><td>Subtotal</td><td class="num">${peso(t.subtotal)}</td></tr>
+      ${t.discount>0 ? `<tr><td>Less: discount${p.discountMode==="percent"?` (${esc(p.discountValue)}%)`:""}</td><td class="num">− ${peso(t.discount)}</td></tr>` : ""}
+      ${p.withDF ? `<tr><td>Delivery fee</td><td class="num">${peso(t.dfAmount)}</td></tr>` : ""}
+      <tr><td>Vatable amount</td><td class="num">${peso(t.base)}</td></tr>
+      <tr><td>VAT (12%)</td><td class="num">${peso(t.vat)}</td></tr>
+      <tr class="grand"><td>TOTAL AMOUNT DUE</td><td class="num">${peso(t.total)}</td></tr>
+    </tbody></table>
+    ${p.withDF ? "" : `<p class="pd-note"><strong>Pricing includes delivery fee.</strong></p>`}
+    ${p.notes ? `<p class="pd-note">${esc(p.notes).replace(/\n/g,"<br>")}</p>` : ""}
+    <div class="pd-sigs">${sig({status:"approved",by:p.preparedBy,at:p.preparedAt},"Prepared by")}${sig(p.a1,"Approved by — Approver 1")}${sig(p.a2,"Approved by — Approver 2")}</div>
+    <div class="pd-conforme"><div class="pd-sig-line">&nbsp;</div><div class="pd-sig-label">Conforme — signature over printed name &amp; date</div></div>
+  </div>`;
+}
+function printProposal(o){
+  const root = document.getElementById("print-root");
+  root.innerHTML = proposalDocHTML(o);
+  document.body.classList.add("printing-proposal");
+  const done = ()=>{ document.body.classList.remove("printing-proposal"); root.innerHTML = ""; window.removeEventListener("afterprint", done); };
+  window.addEventListener("afterprint", done);
+  window.print();
+}
+function openProposalViewer(o, extraFoot){
+  const panel = showSpModal(`Cost proposal ${esc(o.proposal.no)}`, proposalDocHTML(o),
+    `${extraFoot||""}<button class="btn btn-ghost" id="pv-print">Print / Save as PDF</button><button class="btn btn-primary" data-sp-close>Close</button>`);
+  document.getElementById("pv-print").addEventListener("click", ()=>printProposal(o));
+  return panel;
+}
+function openPdfViewer(title, blobUrl, extraBody, extraFoot){
+  return showSpModal(title,
+    `<iframe class="pdf-frame" src="${blobUrl}" title="${esc(title)}"></iframe><p class="muted" style="font-size:12px;margin:6px 0 0;"><a href="${blobUrl}" target="_blank" rel="noopener">Open in a new tab</a> if the preview doesn't show on your device.</p>${extraBody||""}`,
+    `${extraFoot||""}<button class="btn btn-ghost" data-sp-close>Close</button>`);
+}
+
+/* ---------- requester: cart, submit, dashboard ---------- */
+function companyBanner(){
+  const u = state.currentUser;
+  if(u.companyStatus==="pending") return `<div class="remark-box"><strong>${esc(u.company)}</strong> is waiting for admin approval. You can place orders now — CGS starts pricing them once your company is approved.</div>`;
+  if(u.companyStatus==="rejected") return `<div class="remark-box"><strong>${esc(u.company)}</strong> was not approved. Please contact CGS.</div>`;
+  return "";
+}
+function openSpAddModal(itemId, lineId, fromCart){
+  const it = CATALOG.find(i=>i.id===itemId); if(!it) return;
+  const line = lineId ? state.spCart.find(l=>l.lineId===lineId) : null;
+  showSpModal(esc(it.name),
+    `<p class="muted" style="margin:0 0 10px;font-size:13px;">${esc(it.segment)} · per ${esc(it.oum)} · CGS will quote the price.</p>
+     <label>Quantity <span class="req">*</span><input type="number" id="spa-qty" min="1" step="1" value="${line?line.qty:1}" /></label>
+     <label>Customization <input type="text" id="spa-custom" maxlength="120" placeholder="e.g. single side / double side, size, color" value="${esc(line?line.customization:"")}" /></label>
+     <label>Special request <textarea id="spa-note" rows="3" maxlength="400" placeholder="Anything else we should know about this item?">${esc(line?line.note:"")}</textarea></label>`,
+    `<button class="btn btn-ghost" data-sp-close>Cancel</button><button class="btn btn-primary" id="spa-save">${line?"Save changes":"Add to cart"}</button>`, { narrow:true });
+  document.getElementById("spa-save").addEventListener("click", ()=>{
+    const qty = parseInt(document.getElementById("spa-qty").value, 10);
+    if(!(qty>=1 && qty<=100000)){ toast("Enter a quantity of 1 or more.", true); return; }
+    const data = { qty, customization: document.getElementById("spa-custom").value.trim(), note: document.getElementById("spa-note").value.trim() };
+    if(line) Object.assign(line, data);
+    else state.spCart.push({ lineId:"L"+Date.now().toString(36)+Math.random().toString(36).slice(2,6), itemId, ...data });
+    closeSpModal(); updateCartBadge(); toast(line ? "Cart updated." : "Added to cart.");
+    if(fromCart){ renderCart(); cartDrawer.classList.add("open"); }
+    renderIfShop();
+  });
+}
+function renderSpCart(){
+  const wrap = document.getElementById("cart-items");
+  const lines = state.spCart;
+  if(lines.length===0){
+    wrap.innerHTML = `<div class="empty-state"><h4>Your cart is empty</h4><p>Head to the Shop tab and add what you need.</p></div>`;
+  } else {
+    wrap.innerHTML = lines.map(l=>{ const it = CATALOG.find(i=>i.id===l.itemId) || { name:"(removed item)", oum:"" };
+      return `<div class="cart-line">
+        <div class="cart-line-thumb">${it.id?itemImageHTML(it):""}</div>
+        <div class="cart-line-info">
+          <div class="cart-line-name">${esc(it.name)}</div>
+          <div class="cart-line-price">${esc(l.qty)} ${esc(it.oum)}</div>
+          ${spItemNotesHTML(l)}
+          <div class="cart-line-actions"><button class="btn btn-ghost btn-sm" data-sp-edit="${l.lineId}">Edit</button><button class="cart-line-remove" data-sp-remove="${l.lineId}">Remove</button></div>
+        </div></div>`; }).join("") +
+      `<label class="sp-paymode">Payment mode <span class="req">*</span>
+         <select id="sp-paymode"><option value="">Select…</option>${SP_PAY_MODES.map(m=>`<option ${state.spPayMode===m?"selected":""}>${m}</option>`).join("")}</select></label>
+       <p class="muted" style="font-size:12px;">No prices yet — CGS will send a cost proposal for your approval.</p>`;
+  }
+  document.getElementById("checkout-btn").disabled = lines.length===0;
+  wrap.querySelectorAll("[data-sp-edit]").forEach(b=>b.addEventListener("click", ()=>{ const l = state.spCart.find(x=>x.lineId===b.dataset.spEdit); cartDrawer.classList.remove("open"); openSpAddModal(l.itemId, l.lineId, true); }));
+  wrap.querySelectorAll("[data-sp-remove]").forEach(b=>b.addEventListener("click", ()=>{ state.spCart = state.spCart.filter(x=>x.lineId!==b.dataset.spRemove); updateCartBadge(); renderCart(); renderIfShop(); }));
+  const pm = document.getElementById("sp-paymode"); if(pm) pm.addEventListener("change", ()=>{ state.spPayMode = pm.value; });
+}
+function spContacts(){
+  const u = state.currentUser, out = [], seen = new Set();
+  const add = (c, tag)=>{
+    const k = [c.name,c.position,c.address].map(x=>String(x||"").toLowerCase().replace(/\s+/g," ").trim()).join("|");
+    if(!c.name || !c.address || seen.has(k)) return; seen.add(k); out.push({ name:c.name, position:c.position||"", address:c.address, tag });
+  };
+  add({ name:u.name, position:u.position, address:u.companyAddress }, "Registered contact");
+  myOrders().filter(o=>isSPOrder(o) && o.proposalTo).forEach(o=>add(o.proposalTo, "Used before"));
+  return out;
+}
+function openSpSubmit(){
+  const u = state.currentUser;
+  if(state.spCart.length===0) return;
+  if(!state.spPayMode){ toast("Choose a payment mode — bank transfer or check — before submitting.", true); return; }
+  if(u.companyStatus==="rejected"){ toast("Your company wasn't approved, so orders can't be submitted. Please contact CGS.", true); return; }
+  cartDrawer.classList.remove("open");
+  const contacts = spContacts();
+  const summary = state.spCart.map(l=>{ const it = CATALOG.find(i=>i.id===l.itemId) || {name:"(removed item)",oum:""};
+    return `<div class="co-summary-row"><span>${esc(it.name)} × ${esc(l.qty)} ${esc(it.oum)}${spItemNotesHTML(l)}</span></div>`; }).join("");
+  showSpModal("Submit your order",
+    `<div class="co-summary">${summary}<div class="co-summary-row" style="border-top:1px solid var(--sand);margin-top:6px;padding-top:8px;"><span>Payment mode</span><strong>${esc(state.spPayMode)}</strong></div></div>
+     <label>Bill the order to <span class="req">*</span><input id="sps-billto" value="${esc(u.billTo||"")}" placeholder="Name or department to bill" /></label>
+     <p class="field-note" style="margin-top:-6px;">From your account — change it here if this order should be billed to someone else.</p>
+     <div class="sp-to"><div class="ordered-by-title">Address the cost proposal to</div>
+       ${contacts.map((c,n)=>`<label class="sp-contact"><input type="radio" name="spc" value="${n}" ${n===0?"checked":""}/><span><strong>${esc(c.name)}</strong>${c.position?`, ${esc(c.position)}`:""}<br><span class="muted">${esc(c.address)}</span> <em class="sp-tag">${c.tag}</em></span></label>`).join("")}
+       <label class="sp-contact"><input type="radio" name="spc" value="new" ${contacts.length===0?"checked":""}/><span><strong>Add another person</strong></span></label>
+       <div id="sps-new" class="sp-new ${contacts.length===0?"":"hidden"}">
+         <label>Name <span class="req">*</span><input id="sps-name" /></label>
+         <label>Position <input id="sps-pos" /></label>
+         <label>Address <span class="req">*</span><textarea id="sps-addr" rows="2"></textarea></label>
+       </div></div>`,
+    `<button class="btn btn-ghost" data-sp-close>Back</button><button class="btn btn-primary" id="sps-submit">Submit</button>`, { narrow:true });
+  document.querySelectorAll('input[name="spc"]').forEach(r=>r.addEventListener("change", ()=>{ document.getElementById("sps-new").classList.toggle("hidden", r.value!=="new" || !r.checked); }));
+  document.getElementById("sps-submit").addEventListener("click", ()=>{
+    const billTo = document.getElementById("sps-billto").value.trim();
+    if(billTo.length < 2){ toast("Enter who the order should be billed to.", true); return; }
+    const pick = document.querySelector('input[name="spc"]:checked').value;
+    let to;
+    if(pick==="new"){
+      to = { name:document.getElementById("sps-name").value.trim(), position:document.getElementById("sps-pos").value.trim(), address:document.getElementById("sps-addr").value.trim() };
+      if(!to.name || !to.address){ toast("Enter the name and address the proposal should be addressed to.", true); return; }
+    } else { const c = contacts[Number(pick)]; to = { name:c.name, position:c.position, address:c.address }; }
+    const o = createSpOrder({ billTo, to });
+    closeSpModal();
+    toast(`Submitted as ${o.id}. CGS will price your order and send you a cost proposal.`);
+    navigate("u-dashboard");
+  });
+}
+function createSpOrder({ billTo, to }){
+  const u = state.currentUser;
+  const items = state.spCart.map(l=>{ const it = CATALOG.find(i=>i.id===l.itemId);
+    return { itemId:it.id, name:it.name, segment:it.segment, oum:it.oum, qty:l.qty, rate:null, avail:"available", customization:l.customization, note:l.note }; });
+  const o = makeOrder(u, items, u.company || "Special Projects", "Special Projects", "BATCH-"+Date.now());
+  Object.assign(o, { flow:"sp", deliveryType:"SP", status:"sp_pricing", company:u.company, companyId:u.companyId, cpNumber:u.cpNumber,
+    payMode:state.spPayMode, billTo, proposalTo:to, deliveryAddress:to.address, proposal:null, adminRemark:"" });
+  state.orders.push(o);
+  state.spCart = []; state.spPayMode = ""; updateCartBadge();
+  return o;
+}
+function viewSpDashboard(){
+  const u = state.currentUser, orders = myOrders();
+  const ongoing = orders.filter(o=>!["delivered","rejected","cancelled"].includes(o.status)).length;
+  const toSign = orders.filter(o=>o.status==="sp_client").length;
+  const delivered = orders.filter(o=>o.status==="delivered").length;
+  const needsConfirm = orders.filter(o=>!o.customerConfirmedAt && (o.status==="for_delivery"||o.status==="delivered")).length;
+  return `<div class="view-head"><div><h2>Welcome back, ${esc(u.name.split(" ")[0])}</h2><p>${esc(u.company||"")} — track your orders from request to delivery.</p></div></div>
+  ${companyBanner()}
+  <div class="kpi-row">
+    <div class="kpi-card"><div class="kpi-label">Ongoing tickets</div><div class="kpi-value">${ongoing}</div></div>
+    <div class="kpi-card ${toSign?'warn':''}"><div class="kpi-label">Cost proposals to sign</div><div class="kpi-value">${toSign}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Delivered</div><div class="kpi-value">${delivered}</div></div>
+    <div class="kpi-card ${needsConfirm?'warn':''}"><div class="kpi-label">Needs delivery confirmation</div><div class="kpi-value">${needsConfirm}</div></div>
+  </div>
+  <h3 class="section-title">Your orders</h3>
+  ${orders.length===0 ? emptyState("No orders yet","Visit the Shop tab to start an order.") : orders.map(o=>orderCardUser(o)).join("")}`;
+}
+function spOrderCardUser(o){
+  const cancellable = ["sp_pricing","sp_revision","sp_approver1","sp_approver2","sp_client"].includes(o.status);
+  return `<div class="ticket-card">
+    <div class="ticket-top"><div>
+      <div class="ticket-id">${o.id} · Special Projects ${ticketMetaBadges(o)} · ${fmtDate(o.createdAt)}</div>
+      <div class="ticket-title">${esc(o.company||o.township)}</div>
+      <div class="ticket-meta">${o.items.length} item type(s) · ${spMoneyLabel(o)} · ${esc(o.payMode||"")}${o.drNumber?` · DR ${o.drNumber}`:""}${o.bttNumber?` · BTT ${o.bttNumber}`:""}</div>
+    </div><span class="status-badge ${STATUS_CLASS[o.status]}">${STATUS_LABEL[o.status]}</span></div>
+    ${stageTracker(o)}
+    <div class="ticket-items">${spItemRowsHTML(o)}</div>
+    ${timelineHTML(o)}
+    ${o.status==="sp_revision" && o.revisionFrom==="client" ? `<div class="remark-box"><strong>Your revision request:</strong> ${esc(o.clientRemark||"")}</div>` : (o.adminRemark && o.status!=="sp_revision" ? `<div class="remark-box"><strong>CGS note:</strong> ${esc(o.adminRemark)}</div>` : "")}
+    <div class="ticket-actions">
+      ${o.status==="sp_client" ? `<button class="btn btn-primary btn-sm" data-sp-go-proposals>Review &amp; sign cost proposal</button>` : ""}
+      ${!o.customerConfirmedAt && (o.status==="for_delivery"||o.status==="delivered") ? `<button class="btn btn-primary btn-sm" data-confirm-delivery="${o.id}">Confirm delivery received</button>` : ""}
+      ${cancellable ? `<button class="btn btn-ghost btn-sm" data-cancel-order="${o.id}">Cancel order</button>` : ""}
+    </div>
+  </div>`;
+}
+
+/* ---------- requester: cost proposals page ---------- */
+function viewUserProposals(){
+  const mine = myOrders().filter(o=>isSPOrder(o));
+  const waiting = mine.filter(o=>o.status==="sp_client");
+  const others = mine.filter(o=>o.status!=="sp_client" && o.proposal && clientSeesProposal(o));
+  const card = o=>`<div class="ticket-card">
+    <div class="ticket-top"><div>
+      <div class="ticket-id">${esc(o.proposal.no)}${o.proposal.rev?` · Rev ${o.proposal.rev}`:""} · ${o.id}</div>
+      <div class="ticket-title">Total ${peso(o.proposal.totals.total)} <span class="muted" style="font-size:13px;">incl. 12% VAT</span></div>
+      <div class="ticket-meta">${o.items.length} item type(s) · ${esc(o.payMode||"")} · addressed to ${esc((o.proposalTo||{}).name||"")}</div>
+    </div><span class="status-badge ${STATUS_CLASS[o.status]}">${STATUS_LABEL[o.status]}</span></div>
+    <div class="ticket-actions">
+      <button class="btn btn-ghost btn-sm" data-sp-view="${o.id}">View / print</button>
+      ${o.status==="sp_client" ? `<label class="btn btn-primary btn-sm file-btn">Attach signed copy<input type="file" hidden accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" data-sp-sign="${o.id}" /></label>
+        <button class="btn btn-ghost btn-sm" data-sp-revise="${o.id}">Request a change</button>` : ""}
+      ${o.signedCp ? `<span class="muted" style="font-size:12.5px;">Signed copy sent ${fmtDateShort(o.signedCp.at)}</span>` : ""}
+    </div></div>`;
+  return `<div class="view-head"><div><h2>Cost proposals</h2><p>Review the proposal, sign it, and attach the signed copy so CGS can schedule your delivery.</p></div></div>
+  ${companyBanner()}
+  <h3 class="section-title">Waiting for your signed copy</h3>
+  ${waiting.length ? waiting.map(card).join("") : emptyState("Nothing to sign right now","When CGS sends a cost proposal for your order, it appears here.")}
+  ${others.length ? `<h3 class="section-title">Earlier proposals</h3>${others.map(card).join("")}` : ""}`;
+}
+function afterRenderSpClient(){
+  document.querySelectorAll("[data-sp-go-proposals]").forEach(b=>b.addEventListener("click", ()=>navigate("u-proposals")));
+  document.querySelectorAll("[data-sp-view]").forEach(b=>b.addEventListener("click", ()=>{ const o = state.orders.find(x=>x.id===b.dataset.spView); if(o) openProposalViewer(o); }));
+  document.querySelectorAll("[data-sp-sign]").forEach(inp=>inp.addEventListener("change", ()=>{ const f = inp.files[0]; if(f) submitSignedCp(inp.dataset.spSign, f); inp.value = ""; }));
+  document.querySelectorAll("[data-sp-revise]").forEach(b=>b.addEventListener("click", ()=>openReviseModal(b.dataset.spRevise)));
+}
+async function submitSignedCp(orderId, file){
+  const o = state.orders.find(x=>x.id===orderId); if(!o || o.status!=="sp_client") return;
+  const okType = /^(application\/pdf|image\/jpeg|image\/png)$/.test(file.type) || /\.(pdf|jpe?g|png)$/i.test(file.name);
+  if(!okType){ toast("Attach the signed copy as a PDF, JPG or PNG.", true); return; }
+  if(file.size > 8*1024*1024){ toast("That file is over 8 MB. Please attach a smaller scan.", true); return; }
+  toast("Uploading your signed copy…");
+  try{
+    const data = await CGS_SHEETS.fileToBase64(file);
+    const r = await CGS_SHEETS.uploadSignedCp(orderId, file.name, data);
+    const now = Date.now();
+    o.signedCp = { fileId:r.fileId, name:r.name, type:r.type, at:now };
+    o.status = "preparation"; o.prepStatus = "ongoing"; o.confirmedAt = o.confirmedAt||now; o.ackAt = now;
+    o.adminRemark = "Signed cost proposal received — now being prepared.";
+    toast("Signed copy received — CGS will prepare and schedule your delivery.");
+    render();
+    saveThenNotify(o, "signed_received", "CGS");
+  }catch(err){ toast("Couldn't upload the signed copy: " + err.message, true); }
+}
+function openReviseModal(orderId){
+  const o = state.orders.find(x=>x.id===orderId); if(!o) return;
+  showSpModal("Request a change", `<p style="margin:0 0 8px;">Tell CGS what should change in <strong>${esc(o.proposal.no)}</strong>. They'll send a revised proposal through approval again.</p><label>What should change? <span class="req">*</span><textarea id="rv-remark" rows="4"></textarea></label>`,
+    `<button class="btn btn-ghost" data-sp-close>Cancel</button><button class="btn btn-primary" id="rv-send">Send to CGS</button>`, { narrow:true });
+  document.getElementById("rv-send").addEventListener("click", ()=>{
+    const remark = document.getElementById("rv-remark").value.trim();
+    if(remark.length < 3){ toast("Please say what should change.", true); return; }
+    o.status = "sp_revision"; o.revisionFrom = "client"; o.clientRemark = remark;
+    o.adminRemark = "Client asked for a change: " + remark;
+    closeSpModal(); toast("Sent to CGS for revision."); render();
+    saveThenNotify(o, "proposal_revision", "CGS admin");
+  });
+}
+
+/* ---------- admin: company registrations ---------- */
+const companyState = { loaded:false, error:null };
+async function loadCompaniesAdmin(){
+  try{ state.companies = await CGS_SHEETS.adminCompanies(); companyState.error = null; }
+  catch(err){ companyState.error = err.message; }
+  companyState.loaded = true;
+  updateSpCounts();
+  if(currentView==="a-companies") render();
+}
+function companyStatusBadge(s){
+  const cls = s==="approved" ? "status-delivered" : s==="rejected" ? "status-rejected" : "status-wait";
+  return `<span class="status-badge ${cls}">${s==="approved"?"Approved":s==="rejected"?"Rejected":"Waiting for approval"}</span>`;
+}
+function viewAdminCompanies(){
+  const head = `<div class="view-head"><div><h2>Company registrations</h2><p>Open the BIR Form 2303, then approve or reject. The company is e-mailed the result.</p></div><button class="btn btn-ghost btn-sm" id="cmp-refresh">Refresh</button></div>`;
+  if(!CGS_SHEETS.enabled()) return head + emptyState("Connect Google Sheets","Company registrations are stored in your Google Sheet.");
+  if(companyState.error) return head + `<div class="remark-box">${esc(companyState.error)}</div>`;
+  if(!companyState.loaded) return head + `<p class="muted">Loading registrations…</p>`;
+  const list = state.companies.slice().sort((a,b)=>(a.status==="pending"?0:1)-(b.status==="pending"?0:1) || (b.registeredAt||0)-(a.registeredAt||0));
+  if(!list.length) return head + emptyState("No registrations yet","When a company registers, it shows up here.");
+  return head + `<div class="table-wrap"><table>
+    <thead><tr><th>Company</th><th>Address (BIR)</th><th>Email</th><th>Registered</th><th>Status</th><th></th></tr></thead>
+    <tbody>${list.map(c=>`<tr>
+      <td><strong>${esc(c.name)}</strong><div class="muted" style="font-size:11.5px;">${esc(c.id)}</div></td>
+      <td style="max-width:260px;">${esc(c.address)}</td><td>${esc(c.email)}</td><td>${fmtDateShort(c.registeredAt)}</td>
+      <td>${companyStatusBadge(c.status)}${c.reviewedBy?`<div class="muted" style="font-size:11.5px;">by ${esc(c.reviewedBy)}</div>`:""}</td>
+      <td><button class="btn ${c.status==="pending"?"btn-primary":"btn-ghost"} btn-sm" data-cmp-review="${esc(c.id)}">${c.status==="pending"?"Review 2303":"View"}</button></td>
+    </tr>`).join("")}</tbody></table></div>`;
+}
+function afterRenderAdminCompanies(){
+  const r = document.getElementById("cmp-refresh"); if(r) r.addEventListener("click", ()=>{ companyState.loaded = false; render(); loadCompaniesAdmin(); });
+  document.querySelectorAll("[data-cmp-review]").forEach(b=>b.addEventListener("click", ()=>openCompanyReview(b.dataset.cmpReview)));
+  if(!companyState.loaded && CGS_SHEETS.enabled()) loadCompaniesAdmin();
+}
+async function openCompanyReview(id){
+  const c = state.companies.find(x=>x.id===id); if(!c) return;
+  const panel = showSpModal(`${esc(c.name)} — BIR Form 2303`,
+    `<div class="pdf-box" id="cmp-pdf"><p class="muted">Loading the PDF…</p></div>
+     <div class="cmp-facts"><div><span>Address (BIR)</span>${esc(c.address)}</div><div><span>Email</span>${esc(c.email)}</div><div><span>Registered</span>${fmtDate(c.registeredAt)}</div><div><span>Status</span>${companyStatusBadge(c.status)}</div></div>
+     ${c.reviewNote?`<div class="remark-box"><strong>Earlier note:</strong> ${esc(c.reviewNote)}</div>`:""}
+     <label>Note to the company <span class="muted">(required when rejecting)</span><textarea id="cmp-note" rows="2" placeholder="e.g. The 2303 is unclear — please upload a clearer copy."></textarea></label>`,
+    `<button class="btn btn-ghost" data-sp-close>Close</button>
+     ${c.status!=="rejected"?`<button class="btn btn-danger" id="cmp-reject">Reject</button>`:""}
+     ${c.status!=="approved"?`<button class="btn btn-primary" id="cmp-approve">Approve</button>`:""}`);
+  const decide = async decision=>{
+    const note = document.getElementById("cmp-note").value.trim();
+    if(decision==="reject" && note.length<3){ toast("Write a short reason so the company can fix it.", true); return; }
+    if(!confirm(`${decision==="approve"?"Approve":"Reject"} ${c.name}? They will be e-mailed at ${c.email}.`)) return;
+    try{
+      const r = await CGS_SHEETS.reviewCompany(c.id, decision, note);
+      Object.assign(c, r.company); closeSpModal(); updateSpCounts();
+      toast(`${c.name} ${decision==="approve"?"approved":"rejected"}${r.mailed?" — company notified by e-mail.":" — but the e-mail couldn't be sent, please let them know."}`, !r.mailed);
+      render();
+    }catch(err){ toast(err.message, true); }
+  };
+  const ap = document.getElementById("cmp-approve"), rj = document.getElementById("cmp-reject");
+  if(ap) ap.addEventListener("click", ()=>decide("approve"));
+  if(rj) rj.addEventListener("click", ()=>decide("reject"));
+  try{
+    const r = await CGS_SHEETS.companyPdf(c.id);
+    const url = base64ToBlobUrl(r.base64, "application/pdf");
+    const box = document.getElementById("cmp-pdf");
+    if(box) box.innerHTML = `<iframe class="pdf-frame" src="${url}" title="BIR Form 2303"></iframe><p class="muted" style="font-size:12px;margin:6px 0 0;"><a href="${url}" target="_blank" rel="noopener">Open in a new tab</a> if the preview doesn't show on your device.</p>`;
+  }catch(err){ const box = document.getElementById("cmp-pdf"); if(box) box.innerHTML = `<div class="remark-box">Couldn't load the PDF: ${esc(err.message)}</div>`; }
+}
+
+/* ---------- admin: pricing -> cost proposal ---------- */
+function companyStatusFor(o){ const c = state.companies.find(x=>x.id===o.companyId); return c ? c.status : null; }
+function viewAdminSpPricing(){
+  const orders = state.orders.filter(o=>isSPOrder(o) && SP_PRICING_STATUSES.includes(o.status)).sort((a,b)=>a.createdAt-b.createdAt);
+  return `<div class="view-head"><div><h2>Pricing</h2><p>Special Projects orders arrive without prices. Enter your prices, add a discount or delivery fee if needed, and generate the cost proposal for Approver 1 and 2.</p></div></div>
+  ${orders.length===0 ? emptyState("Nothing to price","New Special Projects orders and proposals returned for revision show up here.") : orders.map(o=>{
+    const cs = companyStatusFor(o);
+    return `<div class="ticket-card">
+      <div class="ticket-top"><div>
+        <div class="ticket-id">${o.id} · ${fmtDate(o.createdAt)}${o.proposal?` · Rev ${o.proposal.rev+1} of ${esc(o.proposal.no)}`:""}</div>
+        <div class="ticket-title">${esc(o.company)} ${cs==="pending"?`<span class="status-badge status-wait">Company awaiting approval</span>`:""}</div>
+        <div class="ticket-meta">${esc(o.userName)} — ${esc(o.userPosition)} · CP ${esc(o.cpNumber||"")} · ${esc(o.payMode||"")}</div>
+        <div class="ticket-meta">Bill to: ${esc(o.billTo||"—")} · Proposal to: ${esc((o.proposalTo||{}).name||"")}, ${esc((o.proposalTo||{}).address||"")}</div>
+      </div><span class="status-badge ${STATUS_CLASS[o.status]}">${STATUS_LABEL[o.status]}</span></div>
+      <div class="ticket-items">${spItemRowsHTML(o)}</div>
+      ${o.status==="sp_revision" ? `<div class="remark-box"><strong>Returned for revision:</strong> ${esc(o.adminRemark||"")}</div>` : ""}
+      <div class="ticket-actions"><button class="btn btn-primary btn-sm" data-sp-price="${o.id}">${o.proposal?"Revise &amp; resubmit":"Price &amp; generate cost proposal"}</button></div>
+    </div>`; }).join("")}`;
+}
+function afterRenderAdminSpPricing(){
+  document.querySelectorAll("[data-sp-price]").forEach(b=>b.addEventListener("click", ()=>openSpPricingModal(b.dataset.spPrice)));
+}
+function openSpPricingModal(orderId){
+  const o = state.orders.find(x=>x.id===orderId); if(!o) return;
+  const prev = o.proposal, cs = companyStatusFor(o), blocked = cs && cs!=="approved";
+  const rows = o.items.map((i,n)=>`<tr>
+    <td>${n+1}</td><td><strong>${esc(i.name)}</strong>${spItemNotesHTML(i)}</td><td class="num">${esc(i.qty)} ${esc(i.oum)}</td>
+    <td><input type="number" class="sp-price" data-n="${n}" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="${i.rate||""}" /></td>
+    <td class="num" id="sp-amt-${n}">₱0.00</td></tr>`).join("");
+  showSpModal(`Price ${o.id} — ${esc(o.company)}`,
+    `${blocked?`<div class="remark-box"><strong>${esc(o.company)}</strong> hasn't been approved yet. Approve the company under Companies before sending its proposal.</div>`:""}
+     ${o.status==="sp_revision"?`<div class="remark-box"><strong>Returned for revision:</strong> ${esc(o.adminRemark||"")}</div>`:""}
+     <div class="table-wrap"><table class="sp-price-table"><thead><tr><th>#</th><th>Item / details</th><th class="num">Qty</th><th>Unit price (₱, before VAT)</th><th class="num">Amount</th></tr></thead><tbody>${rows}</tbody></table></div>
+     <div class="sp-price-grid">
+       <div>
+         <label>Discount <select id="sp-dmode"><option value="none">No discount</option><option value="percent">Percent (%)</option><option value="amount">Fixed amount (₱)</option></select></label>
+         <label>Discount value <input type="number" id="sp-dval" min="0" step="0.01" value="${prev?prev.discountValue||"":""}" disabled /></label>
+         <label class="check"><input type="checkbox" id="sp-df" ${prev&&prev.withDF?"checked":""}/> With delivery fee (itemized)</label>
+         <label>Delivery fee (₱) <input type="number" id="sp-dfamt" min="0" step="0.01" value="${prev&&prev.withDF?prev.dfAmount:""}" disabled /></label>
+         <p class="muted" id="sp-df-note" style="font-size:12.5px;margin:0;">No delivery fee line — the proposal will say “Pricing includes delivery fee.”</p>
+         <label>Notes printed on the proposal <textarea id="sp-notes" rows="3" placeholder="Validity, terms, lead time…">${esc(prev?prev.notes||"":"")}</textarea></label>
+       </div>
+       <div class="sp-totals" id="sp-totals"></div>
+     </div>`,
+    `<button class="btn btn-ghost" data-sp-close>Cancel</button><button class="btn btn-primary" id="sp-generate" ${blocked?"disabled":""}>${prev?"Resubmit to Approver 1":"Generate cost proposal → Approver 1"}</button>`);
+  const $ = id=>document.getElementById(id);
+  if(prev){ $("sp-dmode").value = prev.discountMode||"none"; }
+  const read = ()=>{
+    const prices = [...document.querySelectorAll(".sp-price")].map(i=>round2(i.value));
+    const mode = $("sp-dmode").value, val = Number($("sp-dval").value)||0, withDF = $("sp-df").checked, df = Number($("sp-dfamt").value)||0;
+    return { prices, mode, val, withDF, df, totals: spTotals(o.items.map((i,n)=>({qty:i.qty, price:prices[n]})), mode, val, withDF, df) };
+  };
+  const recalc = ()=>{
+    const r = read(), t = r.totals;
+    $("sp-dval").disabled = r.mode==="none"; $("sp-dfamt").disabled = !r.withDF;
+    $("sp-df-note").classList.toggle("hidden", r.withDF);
+    o.items.forEach((i,n)=>{ $("sp-amt-"+n).textContent = peso(i.qty*r.prices[n]); });
+    $("sp-totals").innerHTML = `<div class="fee-row"><span>Subtotal</span><span>${peso(t.subtotal)}</span></div>
+      ${t.discount>0?`<div class="fee-row"><span>Less: discount</span><span>− ${peso(t.discount)}</span></div>`:""}
+      ${r.withDF?`<div class="fee-row"><span>Delivery fee</span><span>${peso(t.dfAmount)}</span></div>`:""}
+      <div class="fee-row"><span>Vatable amount</span><span>${peso(t.base)}</span></div>
+      <div class="fee-row"><span>VAT (12%)</span><span>${peso(t.vat)}</span></div>
+      <div class="fee-row total"><span>Total amount due</span><span>${peso(t.total)}</span></div>`;
+  };
+  document.querySelectorAll("#sp-modal-panel input, #sp-modal-panel select").forEach(el=>el.addEventListener("input", recalc));
+  recalc();
+  $("sp-generate").addEventListener("click", ()=>{
+    const r = read();
+    if(r.prices.some(p=>!(p>0))){ toast("Enter a unit price for every item.", true); return; }
+    if(r.mode==="percent" && !(r.val>=0 && r.val<=100)){ toast("A percent discount must be between 0 and 100.", true); return; }
+    if(r.mode!=="none" && r.mode==="amount" && r.val > r.totals.subtotal){ toast("The discount is more than the subtotal.", true); return; }
+    if(r.withDF && !(r.df>0)){ toast("Enter the delivery fee, or untick “With delivery fee”.", true); return; }
+    const me = state.currentUser, now = Date.now(), rev = prev ? (prev.rev||0)+1 : 0;
+    o.items.forEach((i,n)=>{ i.rate = r.prices[n]; });
+    const history = (prev && prev.history) ? prev.history.slice() : [];
+    history.push({ ts:now, by:me.name, role:"admin", action: prev ? "resubmitted" : "generated", remark: prev ? (o.adminRemark||"") : "" });
+    o.proposal = { no:cpNumberFor(o), rev, discountMode:r.mode, discountValue:r.mode==="none"?0:r.val, withDF:r.withDF, dfAmount:r.withDF?r.df:0,
+      notes:$("sp-notes").value.trim(), totals:r.totals, preparedBy:me.name, preparedByEmail:me.email, preparedAt:now, sentAt:null,
+      a1:{status:"pending"}, a2:{status:"pending"}, history };
+    o.status = "sp_approver1"; o.revisionFrom = null; o.adminRemark = "";
+    closeSpModal(); toast(`${o.proposal.no} sent to Approver 1.`); render();
+    saveThenNotify(o, "approver_pending", "Approver 1");
+  });
+}
+
+/* ---------- admin: all cost proposals ---------- */
+function viewAdminSpProposals(){
+  const list = state.orders.filter(o=>isSPOrder(o) && o.proposal).sort((a,b)=>(b.proposal.preparedAt||0)-(a.proposal.preparedAt||0));
+  return `<div class="view-head"><div><h2>Cost proposals</h2><p>Every proposal and where it is: with an approver, with the client, or signed.</p></div></div>
+  ${list.length===0 ? emptyState("No proposals yet","Price an order to generate the first one.") : `<div class="table-wrap"><table>
+    <thead><tr><th>Proposal</th><th>Company</th><th>Requester</th><th>Total (incl. VAT)</th><th>Stage</th><th></th></tr></thead>
+    <tbody>${list.map(o=>`<tr>
+      <td><strong>${esc(o.proposal.no)}</strong>${o.proposal.rev?` · Rev ${o.proposal.rev}`:""}<div class="muted" style="font-size:11.5px;">${o.id}</div></td>
+      <td>${esc(o.company)}</td><td>${esc(o.userName)}</td><td>${peso(o.proposal.totals.total)}</td>
+      <td><span class="status-badge ${STATUS_CLASS[o.status]}">${STATUS_LABEL[o.status]}</span>${o.proposal.a1 && o.proposal.a1.status==="approved"?`<div class="muted" style="font-size:11.5px;">A1 ✓ ${esc(o.proposal.a1.by)}${o.proposal.a2&&o.proposal.a2.status==="approved"?` · A2 ✓ ${esc(o.proposal.a2.by)}`:""}</div>`:""}</td>
+      <td><button class="btn btn-ghost btn-sm" data-sp-view-admin="${o.id}">View</button>${o.signedCp?` <button class="btn btn-ghost btn-sm" data-sp-signed="${o.id}">Signed copy</button>`:""}</td>
+    </tr>`).join("")}</tbody></table></div>`}`;
+}
+function afterRenderAdminSpProposals(){
+  document.querySelectorAll("[data-sp-view-admin]").forEach(b=>b.addEventListener("click", ()=>{ const o = state.orders.find(x=>x.id===b.dataset.spViewAdmin); if(o) openProposalViewer(o); }));
+  document.querySelectorAll("[data-sp-signed]").forEach(b=>b.addEventListener("click", ()=>viewSignedCp(b.dataset.spSigned)));
+}
+async function viewSignedCp(orderId){
+  try{
+    const r = await CGS_SHEETS.getSignedCp(orderId);
+    const mime = r.type==="pdf" ? "application/pdf" : r.type==="png" ? "image/png" : "image/jpeg";
+    const url = base64ToBlobUrl(r.base64, mime);
+    if(r.type==="pdf") openPdfViewer("Signed cost proposal", url);
+    else showSpModal("Signed cost proposal", `<img src="${url}" alt="Signed cost proposal" style="max-width:100%;border-radius:8px;" />`, `<button class="btn btn-ghost" data-sp-close>Close</button>`);
+  }catch(err){ toast(err.message, true); }
+}
+
+/* ---------- approvers ---------- */
+function approverStage(){ return state.currentUser.role==="approver1" ? 1 : 2; }
+function viewApproverQueue(){
+  const want = approverStage()===1 ? "sp_approver1" : "sp_approver2";
+  const list = state.orders.filter(o=>o.status===want && o.proposal).sort((a,b)=>(a.proposal.preparedAt||0)-(b.proposal.preparedAt||0));
+  return `<div class="view-head"><div><h2>For my approval</h2><p>You are Approver ${approverStage()}. Open a proposal to read it, then approve it or send it back to the admin with a remark.</p></div></div>
+  ${list.length===0 ? emptyState("Nothing waiting for you","Cost proposals that reach your stage appear here.") : list.map(o=>`<div class="ticket-card">
+    <div class="ticket-top"><div>
+      <div class="ticket-id">${esc(o.proposal.no)}${o.proposal.rev?` · Rev ${o.proposal.rev}`:""} · ${o.id}</div>
+      <div class="ticket-title">${esc(o.company)} <span class="muted" style="font-size:13px;">— ${esc(o.userName)}</span></div>
+      <div class="ticket-meta">${o.items.length} item type(s) · ${esc(o.payMode||"")} · prepared by ${esc(o.proposal.preparedBy)} · ${fmtDate(o.proposal.preparedAt)}</div>
+    </div><div class="ticket-total">${peso(o.proposal.totals.total)}<span>incl. VAT</span></div></div>
+    <div class="ticket-actions"><button class="btn btn-primary btn-sm" data-ap-open="${o.id}">Review proposal</button></div></div>`).join("")}`;
+}
+function viewApproverHistory(){
+  const me = state.currentUser, stage = approverStage();
+  const rows = [];
+  state.orders.filter(o=>o.proposal).forEach(o=>(o.proposal.history||[]).forEach(h=>{
+    if(h.role===me.role && h.by===me.name && new RegExp("^(approved|returned)"+stage+"$").test(h.action)) rows.push({ o, h });
+  }));
+  rows.sort((x,y)=>y.h.ts-x.h.ts);
+  return `<div class="view-head"><div><h2>My decisions</h2><p>Every proposal you approved or sent back, newest first.</p></div></div>
+  ${rows.length===0 ? emptyState("No decisions yet","Your approvals and returns will be listed here.") : `<div class="table-wrap"><table>
+    <thead><tr><th>Proposal</th><th>Company</th><th>Total (current)</th><th>My decision</th><th>When</th><th>Where it is now</th></tr></thead>
+    <tbody>${rows.map(({o,h})=>`<tr><td><strong>${esc(o.proposal.no)}</strong></td><td>${esc(o.company)}</td><td>${peso(o.proposal.totals.total)}</td>
+      <td>${/^approved/.test(h.action)?"Approved":"Returned"}${h.remark?`<div class="muted" style="font-size:11.5px;">${esc(h.remark)}</div>`:""}</td><td>${fmtDate(h.ts)}</td><td>${STATUS_LABEL[o.status]}</td></tr>`).join("")}</tbody></table></div>`}`;
+}
+function afterRenderApprover(){
+  document.querySelectorAll("[data-ap-open]").forEach(b=>b.addEventListener("click", ()=>openApprovalModal(b.dataset.apOpen)));
+}
+function openApprovalModal(orderId){
+  const o = state.orders.find(x=>x.id===orderId), stage = approverStage();
+  if(!o || o.status !== (stage===1 ? "sp_approver1" : "sp_approver2")){ toast("This proposal is no longer waiting for you.", true); render(); return; }
+  showSpModal(`Approval — ${esc(o.proposal.no)}`,
+    `${proposalDocHTML(o)}<label class="sp-remark">Remark <span class="muted">(required when sending back)</span><textarea id="ap-remark" rows="2" placeholder="e.g. Please apply the 5% volume discount."></textarea></label>`,
+    `<button class="btn btn-ghost" id="ap-print">Print</button><button class="btn btn-danger" id="ap-return">Send back for revision</button><button class="btn btn-primary" id="ap-approve">Approve</button>`);
+  document.getElementById("ap-print").addEventListener("click", ()=>printProposal(o));
+  document.getElementById("ap-approve").addEventListener("click", ()=>decideProposal(o, stage, true));
+  document.getElementById("ap-return").addEventListener("click", ()=>decideProposal(o, stage, false));
+}
+function decideProposal(o, stage, approve){
+  const remark = document.getElementById("ap-remark").value.trim();
+  if(!approve && remark.length<3){ toast("Write a short remark so the admin knows what to change.", true); return; }
+  const me = state.currentUser, now = Date.now(), key = stage===1 ? "a1" : "a2";
+  o.proposal[key] = { status: approve?"approved":"rejected", by:me.name, email:me.email, at:now, remark };
+  o.proposal.history = (o.proposal.history||[]).concat([{ ts:now, by:me.name, role:me.role, action:(approve?"approved":"returned")+stage, remark }]);
+  let kind, who;
+  if(approve && stage===1){ o.status = "sp_approver2"; kind = "approver_pending"; who = "Approver 2"; }
+  else if(approve){ o.status = "sp_client"; o.proposal.sentAt = now; kind = "proposal_ready"; who = "the client"; }
+  else { o.status = "sp_revision"; o.revisionFrom = me.role; o.adminRemark = `Returned by Approver ${stage}: ${remark}`; kind = "proposal_revision"; who = "CGS admin"; }
+  closeSpModal();
+  toast(approve ? (stage===1 ? "Approved — sent to Approver 2." : "Approved — the cost proposal is on its way to the client.") : "Sent back to the admin for revision.");
+  render();
+  saveThenNotify(o, kind, who);
 }
 
 /* ---------------------------- GOOGLE SHEETS SYNC ---------------------------
@@ -2067,32 +2795,15 @@ function hydrateFromRemote(data){
      falls back to the original in-memory demo data (nothing persists
      between reloads), exactly like before.
    ---------------------------------------------------------------------------*/
-/* Pulls everything from the Sheet. Returns false if it can't be reached
-   (the app then refuses to save, so a failed load can never wipe the Sheet). */
-async function loadFromSheet(){
-  const remote = await CGS_SHEETS.loadAll();
-  if(!remote) return false;
-  hydrateTownships(remote.townships);
-  hydrateFromRemote(remote);
-  if(!(remote.orders||[]).length && !(remote.catalog||[]).length) seedDemoOrders();   // very first run only (saved after the first sign-in)
-  ensureTownshipInfo();
-  return true;
-}
+/* Nothing is read from the Sheet until somebody signs in. The only thing that can happen here is
+   picking up a "Remember me" session, and the server answers that with the person's data. */
 async function boot(){
-  if(CGS_SHEETS.enabled()){
-    const ok = await loadFromSheet();
-    if(!ok) toast("Couldn't reach Google Sheets — nothing will be saved until it reconnects. Reload to try again.", true);
-  } else {
-    seedDemoOrders();
-    ensureTownshipInfo();
-  }
-  if(state.currentUser) render();
-  else if(CGS_SHEETS.enabled() && CGS_SHEETS.loaded){
-    const sess = readRememberedSession();               // "Remember me": ask the server if the token is still good
-    if(sess){
-      try{ const r = await CGS_SHEETS.validateSession(sess.token); CGS_SHEETS.token = sess.token; login(r.user); }
-      catch(err){ if(!/reach/i.test(err.message)) ls.del("cgs_session"); }
-    }
-  }
+  if(!CGS_SHEETS.enabled()){ seedDemoOrders(); ensureTownshipInfo(); return; }
+  const sess = readRememberedSession();
+  if(!sess) return;
+  try{
+    const r = await CGS_SHEETS.validateSession(sess.token);
+    finishSignIn(r.user, sess.token, true, r.data);
+  }catch(err){ if(!/reach|fetch|network|failed/i.test(err.message)) ls.del("cgs_session"); }
 }
 bootReady = boot();
