@@ -7,14 +7,14 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=20261007a" />
+<link rel="stylesheet" href="styles.css?v=20261008b" />
 <link rel="preconnect" href="https://script.google.com">
 <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
 <link rel="preconnect" href="https://drive.google.com">
 <link rel="preconnect" href="https://lh3.googleusercontent.com" crossorigin>
 <!-- config + data connector load first, so the Sheet starts being read while the rest of the page loads -->
-<script src="config.js?v=20261007a"></script>
-<script src="sheets-api.js?v=20261007a"></script>
+<script src="config.js?v=20261008b"></script>
+<script src="sheets-api.js?v=20261008b"></script>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 </head>
 <body>
@@ -153,6 +153,7 @@
       <button class="nav-item" data-view="u-shop"><i data-ic="cart"></i>Shop</button>
       <button class="nav-item" data-view="u-ack"><i data-ic="check"></i>Acknowledge <span class="pill" id="ack-count">0</span></button>
       <button class="nav-item" data-view="u-confirm"><i data-ic="truck"></i>Confirm Delivery <span class="pill" id="confirm-count">0</span></button>
+      <button class="nav-item" data-view="u-billing"><i data-ic="doc"></i>Billing <span class="pill" id="billing-count">0</span></button>
     </nav>
 
     <nav id="nav-sp" class="sidenav hidden">
@@ -160,6 +161,7 @@
       <button class="nav-item" data-view="u-shop"><i data-ic="cart"></i>Shop</button>
       <button class="nav-item" data-view="u-proposals"><i data-ic="doc"></i>Cost Proposals <span class="pill" id="sp-proposal-count">0</span></button>
       <button class="nav-item" data-view="u-confirm"><i data-ic="truck"></i>Confirm Delivery <span class="pill" id="sp-confirm-count">0</span></button>
+      <button class="nav-item" data-view="u-billing"><i data-ic="doc"></i>Billing <span class="pill" id="sp-billing-count">0</span></button>
     </nav>
 
     <nav id="nav-approver" class="sidenav hidden">
@@ -178,6 +180,7 @@
       <button class="nav-item" data-view="a-dr"><i data-ic="doc"></i>DR Generator</button>
       <button class="nav-item" data-view="a-delivery"><i data-ic="road"></i>For Delivery</button>
       <button class="nav-item" data-view="a-delivered"><i data-ic="box"></i>Delivered Items</button>
+      <button class="nav-item" data-view="a-billing"><i data-ic="doc"></i>Billing <span class="pill" id="c-billing">0</span></button>
       <button class="nav-item" data-view="a-history"><i data-ic="clock"></i>Overall History</button>
       <button class="nav-item" data-view="a-edit"><i data-ic="doc"></i>Edit Orders</button>
       <div class="sidenav-label">Special Projects</div>
@@ -300,6 +303,6 @@
 <!-- ============ TOAST ============ -->
 <div id="toast" class="toast"></div>
 
-<script src="script.js?v=20261007a"></script>
+<script src="script.js?v=20261008b"></script>
 </body>
 </html>

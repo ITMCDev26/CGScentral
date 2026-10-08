@@ -869,7 +869,7 @@ onBreakpoint();
 
 const ROLE_LABEL = { admin:"CGS Admin", approver1:"Approver 1", approver2:"Approver 2", user:"Requester" };
 function login(u){
-  state.currentUser = u;
+  state.currentUser = u; billingFilter = "action";
   authScreen.classList.add("hidden");
   appEl.classList.remove("hidden");
   document.getElementById("who-name").textContent = u.name;
@@ -907,7 +907,7 @@ const viewTitles = {
   "a-delivery":"For Delivery", "a-delivered":"Delivered Items", "a-history":"Overall Delivery History",
   "a-edit":"Edit Orders", "a-vehicles":"Vehicle Summary", "a-item-summary":"Item Summary",
   "a-items":"Items & Pricing", "a-availability":"Availability Watch", "a-townships":"Township Addresses", "a-users":"Users & Passwords",
-  "a-companies":"Company registrations", "a-sp-pricing":"Special Projects — Pricing", "a-sp-proposals":"Cost proposals",
+  "a-billing":"Billing", "u-billing":"Billing", "a-companies":"Company registrations", "a-sp-pricing":"Special Projects — Pricing", "a-sp-proposals":"Cost proposals",
   "u-proposals":"Cost proposals", "p-queue":"For my approval", "p-history":"My decisions"
 };
 let currentView = "u-dashboard";
@@ -1007,22 +1007,34 @@ document.getElementById("checkout-btn").addEventListener("click", ()=>{
   openModal("checkout-modal");
 });
 
-document.getElementById("place-order-btn").addEventListener("click", ()=>{
-  const township = document.getElementById("co-township").value;
-  const bySeg = {};
-  state.cart.forEach(c=>{ const it=CATALOG.find(i=>i.id===c.itemId); (bySeg[it.segment]=bySeg[it.segment]||[]).push(...buildLinesForCartItem(it, c.qty)); });
-  const batchId = "BATCH-"+Date.now();
-  const created = [];
-  Object.keys(bySeg).forEach(seg=>{
-    const t = makeOrder(state.currentUser, bySeg[seg], township, seg, batchId);
-    state.orders.push(t); created.push(t.id);
-  });
-  state.cart = [];
-  updateCartBadge();
-  closeModal("checkout-modal");
-  const advanced = state.orders.filter(o=>created.includes(o.id)).some(o=>o.items.some(i=>i.advance));
-  toast(`${created.length} ticket${created.length>1?"s":""} placed (${created.join(", ")}) — CGS will confirm availability shortly.${advanced?" Out-of-stock items were placed as advance orders (under production).":""}`);
-  navigate("u-dashboard");
+/* Ticket numbers are handed out by the server (so two devices can't clash). */
+async function reserveTicketNumbers(n){
+  if(!CGS_SHEETS.enabled() || !CGS_SHEETS.token) return;      // local demo: the browser's own counter is fine
+  state.orderSeq = await CGS_SHEETS.reserveSeq(n);
+}
+document.getElementById("place-order-btn").addEventListener("click", async ()=>{
+  const btn = document.getElementById("place-order-btn"); if(btn.disabled) return;
+  btn.disabled = true;
+  try{
+    const township = document.getElementById("co-township").value;
+    const segCount = new Set(state.cart.map(c=>CATALOG.find(i=>i.id===c.itemId).segment)).size;
+    try{ await reserveTicketNumbers(segCount); }
+    catch(err){ toast("Couldn't reach CGS to number your ticket, so nothing was ordered. Please try again in a moment.", true); return; }
+    const bySeg = {};
+    state.cart.forEach(c=>{ const it=CATALOG.find(i=>i.id===c.itemId); (bySeg[it.segment]=bySeg[it.segment]||[]).push(...buildLinesForCartItem(it, c.qty)); });
+    const batchId = "BATCH-"+Date.now();
+    const created = [];
+    Object.keys(bySeg).forEach(seg=>{
+      const t = makeOrder(state.currentUser, bySeg[seg], township, seg, batchId);
+      state.orders.push(t); created.push(t.id);
+    });
+    state.cart = [];
+    updateCartBadge();
+    closeModal("checkout-modal");
+    const advanced = state.orders.filter(o=>created.includes(o.id)).some(o=>o.items.some(i=>i.advance));
+    toast(`${created.length} ticket${created.length>1?"s":""} placed (${created.join(", ")}) — CGS will confirm availability shortly.${advanced?" Out-of-stock items were placed as advance orders (under production).":""}`);
+    navigate("u-dashboard");
+  } finally { btn.disabled = false; }
 });
 
 /* ---------------------------- RENDER ROOT ----------------------------------*/
@@ -1047,6 +1059,13 @@ function updateSpCounts(){
   if(isApprover(u)){
     const want = u.role==="approver1" ? "sp_approver1" : "sp_approver2";
     setPill("c-approval", state.orders.filter(o=>o.status===want).length);
+  }
+  if(u.role==="admin"){
+    setPill("c-billing", state.orders.filter(o=>(o.status==="delivered" && !o.billing) || (o.billing && o.billing.status==="for_confirmation")).length);
+  }
+  if(u.role==="user"){
+    const due = state.orders.filter(o=>o.userEmail===u.email && o.billing && o.billing.status==="unpaid").length;
+    setPill("billing-count", due); setPill("sp-billing-count", due);
   }
   if(isSPUser(u)){
     setPill("sp-proposal-count", state.orders.filter(o=>isSPOrder(o) && o.userEmail===u.email && o.status==="sp_client").length);
@@ -1148,6 +1167,7 @@ function orderCardUser(o){
       ${o.items.map(i=>`<div class="ticket-item-row"><span>${i.name} × ${i.qty} ${i.oum}</span><span>${itemAvailLabel(i)}</span></div>`).join("")}
     </div>
     ${timelineHTML(o)}
+    ${billingChipHTML(o)}
     ${o.adminRemark ? `<div class="remark-box"><strong>CGS note:</strong> ${o.adminRemark}</div>` : ""}
     ${(o.status==="awaiting_ack" || o.status==="new") ? `<div class="ticket-actions">${o.status==="awaiting_ack"?`<button class="btn btn-primary btn-sm" data-ack="${o.id}">Acknowledge &amp; proceed</button>`:""}<button class="btn btn-ghost btn-sm" data-cancel-order="${o.id}">Cancel order</button></div>` : ""}
     ${!o.customerConfirmedAt && (o.status==="for_delivery"||o.status==="delivered") ? `<div class="ticket-actions"><button class="btn btn-primary btn-sm" data-confirm-delivery="${o.id}">Confirm delivery received</button></div>` : ""}
@@ -2170,6 +2190,7 @@ const VIEWS = {
   "a-edit": viewAdminEdit, "a-vehicles": viewAdminVehicles, "a-item-summary": viewAdminItemSummary,
   "a-items": viewAdminItems, "a-availability": viewAdminAvailability, "a-townships": viewAdminTownships, "a-users": viewAdminUsers,
   "a-companies": viewAdminCompanies, "a-sp-pricing": viewAdminSpPricing, "a-sp-proposals": viewAdminSpProposals,
+  "a-billing": viewAdminBilling, "u-billing": viewUserBilling,
   "u-proposals": viewUserProposals, "p-queue": viewApproverQueue, "p-history": viewApproverHistory
 };
 function afterRender(view){
@@ -2177,6 +2198,9 @@ function afterRender(view){
   if(view==="u-dashboard" || view==="u-ack" || view==="u-confirm") afterRenderUser();
   if(view==="u-dashboard" || view==="u-proposals") afterRenderSpClient();
   if(view==="a-companies") afterRenderAdminCompanies();
+  if(view==="a-billing") afterRenderAdminBilling();
+  if(view==="u-billing") afterRenderBilling();
+  document.querySelectorAll("[data-go-billing]").forEach(b=>b.addEventListener("click", ()=>navigate("u-billing")));
   if(view==="a-sp-pricing") afterRenderAdminSpPricing();
   if(view==="a-sp-proposals") afterRenderAdminSpProposals();
   if(view==="p-queue" || view==="p-history") afterRenderApprover();
@@ -2403,7 +2427,7 @@ function openSpSubmit(){
        </div></div>`,
     `<button class="btn btn-ghost" data-sp-close>Back</button><button class="btn btn-primary" id="sps-submit">Submit</button>`, { narrow:true });
   document.querySelectorAll('input[name="spc"]').forEach(r=>r.addEventListener("change", ()=>{ document.getElementById("sps-new").classList.toggle("hidden", r.value!=="new" || !r.checked); }));
-  document.getElementById("sps-submit").addEventListener("click", ()=>{
+  document.getElementById("sps-submit").addEventListener("click", async ()=>{
     const billTo = document.getElementById("sps-billto").value.trim();
     if(billTo.length < 2){ toast("Enter who the order should be billed to.", true); return; }
     const pick = document.querySelector('input[name="spc"]:checked').value;
@@ -2412,6 +2436,9 @@ function openSpSubmit(){
       to = { name:document.getElementById("sps-name").value.trim(), position:document.getElementById("sps-pos").value.trim(), address:document.getElementById("sps-addr").value.trim() };
       if(!to.name || !to.address){ toast("Enter the name and address the proposal should be addressed to.", true); return; }
     } else { const c = contacts[Number(pick)]; to = { name:c.name, position:c.position, address:c.address }; }
+    const sbtn = document.getElementById("sps-submit"); sbtn.disabled = true;
+    try{ await reserveTicketNumbers(1); }
+    catch(err){ sbtn.disabled = false; toast("Couldn't reach CGS to number your ticket, so nothing was submitted. Please try again in a moment.", true); return; }
     const o = createSpOrder({ billTo, to });
     closeSpModal();
     toast(`Submitted as ${o.id}. CGS will price your order and send you a cost proposal.`);
@@ -2457,6 +2484,7 @@ function spOrderCardUser(o){
     ${stageTracker(o)}
     <div class="ticket-items">${spItemRowsHTML(o)}</div>
     ${timelineHTML(o)}
+    ${billingChipHTML(o)}
     ${o.status==="sp_revision" && o.revisionFrom==="client" ? `<div class="remark-box"><strong>Your revision request:</strong> ${esc(o.clientRemark||"")}</div>` : (o.adminRemark && o.status!=="sp_revision" ? `<div class="remark-box"><strong>CGS note:</strong> ${esc(o.adminRemark)}</div>` : "")}
     <div class="ticket-actions">
       ${o.status==="sp_client" ? `<button class="btn btn-primary btn-sm" data-sp-go-proposals>Review &amp; sign cost proposal</button>` : ""}
@@ -2760,6 +2788,236 @@ function decideProposal(o, stage, approve){
   render();
   saveThenNotify(o, kind, who);
 }
+
+
+/* ============================================================
+   BILLING — after delivery the admin issues a billing amount; the requester pays and
+   attaches the receipt; the admin confirms it. Unpaid bills can be chased by e-mail.
+   ============================================================ */
+const BILL_STATUS = { unpaid:"Unpaid", for_confirmation:"Receipt sent — waiting for CGS", paid:"Paid" };
+const BILL_CLASS = { unpaid:"status-wait", for_confirmation:"status-prep", paid:"status-delivered" };
+function todayISO(offsetDays){ const d = new Date(Date.now() + (offsetDays||0)*86400000); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function billNoFor(o){ return "BILL-" + String(o.id).replace(/^TCK-/,""); }
+function billingDefaultAmount(o){ return isSPOrder(o) && o.proposal ? o.proposal.totals.total : round2(orderTotal(o) + (o.totalBilled||0)); }
+function billOverdue(b){ return !!b && b.status!=="paid" && !!b.dueDate && b.dueDate < todayISO(); }
+function billBadge(b){ return `<span class="status-badge ${BILL_CLASS[b.status]}">${BILL_STATUS[b.status]}</span>${billOverdue(b)?` <span class="status-badge status-rejected">Overdue</span>`:""}`; }
+function fmtDue(iso){ return iso ? fmtDateShort(new Date(iso+"T00:00:00").getTime()) : "—"; }
+function billingChipHTML(o){
+  if(!o.billing) return "";
+  return `<div class="bill-chip"><span>Billing <strong>${esc(o.billing.no)}</strong> · ${peso(o.billing.amount)}</span>${billBadge(o.billing)}<button class="linklike" data-go-billing>View billing</button></div>`;
+}
+function openReceiptViewer(title, r){
+  const mime = r.type==="pdf" ? "application/pdf" : r.type==="png" ? "image/png" : "image/jpeg";
+  const url = base64ToBlobUrl(r.base64, mime);
+  if(r.type==="pdf") return openPdfViewer(title, url);
+  return showSpModal(title, `<img src="${url}" alt="${esc(title)}" style="max-width:100%;border-radius:8px;" />`, `<button class="btn btn-ghost" data-sp-close>Close</button>`);
+}
+async function viewReceipt(orderId, fileId){
+  try{ const r = await CGS_SHEETS.getReceipt(orderId, fileId); openReceiptViewer("Payment receipt", r); }
+  catch(err){ toast(err.message, true); }
+}
+
+/* ---------- admin ---------- */
+let billingFilter = "action";
+function billingGroup(o){ return o.billing ? o.billing.status : "tobill"; }
+function viewAdminBilling(){
+  const all = state.orders.filter(o=>o.status==="delivered" || o.billing);
+  const count = g=>all.filter(o=>billingGroup(o)===g).length;
+  const unpaidTotal = round2(all.filter(o=>o.billing && o.billing.status!=="paid").reduce((s,o)=>s+o.billing.amount,0));
+  const overdue = all.filter(o=>billOverdue(o.billing)).length;
+  const filters = [["action","Needs action"],["tobill","To bill"],["unpaid","Unpaid"],["for_confirmation","For confirmation"],["paid","Paid"],["all","All"]];
+  const match = o=>{ const g = billingGroup(o); return billingFilter==="all" || (billingFilter==="action" ? (g==="tobill" || g==="for_confirmation" || billOverdue(o.billing)) : g===billingFilter); };
+  const rows = all.filter(match).sort((a,b)=>(b.deliveredAt||b.createdAt||0)-(a.deliveredAt||a.createdAt||0));
+  const actions = o=>{
+    const b = o.billing;
+    if(!b) return `<button class="btn btn-primary btn-sm" data-bill-issue="${o.id}">Issue billing</button>`;
+    if(b.status==="unpaid") return `<button class="btn btn-ghost btn-sm" data-bill-remind="${o.id}">Send reminder</button> <button class="btn btn-ghost btn-sm" data-bill-edit="${o.id}">Edit</button> <button class="btn btn-ghost btn-sm" data-bill-paid="${o.id}">Mark paid</button>`;
+    if(b.status==="for_confirmation") return `<button class="btn btn-primary btn-sm" data-bill-review="${o.id}">Review receipt</button>`;
+    return (b.receipts||[]).length ? `<button class="btn btn-ghost btn-sm" data-bill-review="${o.id}">View receipt</button>` : "";
+  };
+  return `<div class="view-head"><div><h2>Billing</h2><p>Bill delivered tickets, check the payment receipts people attach, and remind anyone who hasn't paid.</p></div></div>
+  <div class="kpi-row">
+    <div class="kpi-card ${count("tobill")?'warn':''}"><div class="kpi-label">To bill</div><div class="kpi-value">${count("tobill")}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Unpaid</div><div class="kpi-value">${peso(unpaidTotal)}</div></div>
+    <div class="kpi-card ${count("for_confirmation")?'warn':''}"><div class="kpi-label">Receipts to confirm</div><div class="kpi-value">${count("for_confirmation")}</div></div>
+    <div class="kpi-card ${overdue?'warn':''}"><div class="kpi-label">Overdue</div><div class="kpi-value">${overdue}</div></div>
+  </div>
+  <div class="filter-bar">${filters.map(([k,l])=>`<button class="chip ${billingFilter===k?"active":""}" data-bill-filter="${k}">${l}</button>`).join("")}</div>
+  ${rows.length===0 ? emptyState("Nothing here","No tickets match this filter.") : `<div class="table-wrap"><table>
+    <thead><tr><th>Ticket</th><th>Requester</th><th>Billing</th><th>Due</th><th>Status</th><th>Action</th></tr></thead>
+    <tbody>${rows.map(o=>{ const b = o.billing; return `<tr>
+      <td><strong>${o.id}</strong><div class="muted" style="font-size:11.5px;">${esc(o.company||o.township)}${isSPOrder(o)?" · SP":""}</div><div class="muted" style="font-size:11.5px;">Delivered ${o.deliveredAt?fmtDateShort(o.deliveredAt):"—"}</div></td>
+      <td>${esc(o.userName)}</td>
+      <td>${b?`<strong>${peso(b.amount)}</strong><div class="muted" style="font-size:11.5px;">${esc(b.no)}</div>`:`<span class="muted">Suggested ${peso(billingDefaultAmount(o))}</span>`}</td>
+      <td>${b?fmtDue(b.dueDate):"—"}</td>
+      <td>${b?billBadge(b):`<span class="status-badge status-new">Not billed</span>`}${b&&(b.reminders||[]).length?`<div class="muted" style="font-size:11.5px;">${b.reminders.length} reminder${b.reminders.length>1?"s":""} · last ${fmtDateShort(b.reminders[b.reminders.length-1].ts)}</div>`:""}${b&&b.rejectNote&&b.status==="unpaid"?`<div class="muted" style="font-size:11.5px;">Receipt rejected: ${esc(b.rejectNote)}</div>`:""}</td>
+      <td><div class="bill-actions">${actions(o)}</div></td></tr>`; }).join("")}</tbody></table></div>`}`;
+}
+function afterRenderAdminBilling(){
+  const find = id=>state.orders.find(o=>o.id===id);
+  document.querySelectorAll("[data-bill-filter]").forEach(b=>b.addEventListener("click", ()=>{ billingFilter = b.dataset.billFilter; render(); }));
+  document.querySelectorAll("[data-bill-issue]").forEach(b=>b.addEventListener("click", ()=>openBillingModal(find(b.dataset.billIssue), false)));
+  document.querySelectorAll("[data-bill-edit]").forEach(b=>b.addEventListener("click", ()=>openBillingModal(find(b.dataset.billEdit), true)));
+  document.querySelectorAll("[data-bill-remind]").forEach(b=>b.addEventListener("click", ()=>sendBillingReminder(find(b.dataset.billRemind))));
+  document.querySelectorAll("[data-bill-paid]").forEach(b=>b.addEventListener("click", ()=>openMarkPaidModal(find(b.dataset.billPaid))));
+  document.querySelectorAll("[data-bill-review]").forEach(b=>b.addEventListener("click", ()=>openReceiptReview(find(b.dataset.billReview))));
+}
+function openBillingModal(o, editing){
+  const b = editing ? o.billing : null, me = state.currentUser;
+  const hint = isSPOrder(o) && o.proposal ? `Cost proposal ${esc(o.proposal.no)} total (incl. 12% VAT): ${peso(o.proposal.totals.total)}`
+    : `Items ${peso(orderTotal(o))} + delivery fee ${peso(o.totalBilled||0)}`;
+  showSpModal(`${editing?"Edit billing":"Issue billing"} — ${o.id}`,
+    `<p class="muted" style="margin:0 0 10px;font-size:13px;">${esc(o.userName)} · ${esc(o.company||o.township)}${o.payMode?` · pays by ${esc(o.payMode)}`:""}<br>${hint}</p>
+     <label>Billing amount (₱) <span class="req">*</span><input type="number" id="bl-amount" min="0.01" step="0.01" inputmode="decimal" value="${b?b.amount:billingDefaultAmount(o)}" /></label>
+     <label>Due date <input type="date" id="bl-due" value="${b?(b.dueDate||""):todayISO(15)}" /></label>
+     <label>Note to the requester <textarea id="bl-note" rows="2" placeholder="Bank details, reference number, payment terms…">${esc(b?b.note||"":"")}</textarea></label>
+     <p class="muted" style="font-size:12px;margin:0;">The requester is e-mailed and sees this under Billing, where they can attach their payment receipt.</p>`,
+    `<button class="btn btn-ghost" data-sp-close>Cancel</button><button class="btn btn-primary" id="bl-save">${editing?"Save changes":"Issue billing"}</button>`, { narrow:true });
+  document.getElementById("bl-save").addEventListener("click", ()=>{
+    const amount = round2(document.getElementById("bl-amount").value);
+    if(!(amount>0)){ toast("Enter the billing amount.", true); return; }
+    const dueDate = document.getElementById("bl-due").value, note = document.getElementById("bl-note").value.trim();
+    const changedAmount = !editing || b.amount!==amount;
+    if(editing){ Object.assign(o.billing, { amount, dueDate, note }); }
+    else o.billing = { no:billNoFor(o), amount, issuedAt:Date.now(), issuedBy:me.name, dueDate, note, status:"unpaid", receipts:[], reminders:[] };
+    closeSpModal(); render();
+    toast(editing ? "Billing updated." : `Billing ${o.billing.no} issued to ${o.userName}.`);
+    if(changedAmount) saveThenNotify(o, "billing_issued", o.userName); else CGS_SHEETS.saveNow(snapshotState);
+  });
+}
+function sendBillingReminder(o){
+  const b = o.billing; if(!b || b.status==="paid") return;
+  const last = (b.reminders||[]).length ? b.reminders[b.reminders.length-1].ts : 0;
+  if(last && Date.now()-last < 3600000 && !confirm("A reminder was sent less than an hour ago. Send another?")) return;
+  if(!confirm(`E-mail a payment reminder for ${peso(b.amount)} to ${o.userName}?`)) return;
+  b.reminders = (b.reminders||[]).concat([{ ts:Date.now(), by:state.currentUser.name }]);
+  render(); toast(`Reminder sent to ${o.userName}.`);
+  saveThenNotify(o, "billing_reminder", o.userName);
+}
+function openMarkPaidModal(o){
+  showSpModal(`Mark ${esc(o.billing.no)} as paid`, `<p style="margin:0 0 8px;">Use this when the payment arrived without a receipt upload (cash, check handed over, etc.).</p><label>Reference / note <textarea id="mp-note" rows="2" placeholder="e.g. OR no. 1234, check no. 56789"></textarea></label>`,
+    `<button class="btn btn-ghost" data-sp-close>Cancel</button><button class="btn btn-primary" id="mp-save">Confirm payment of ${peso(o.billing.amount)}</button>`, { narrow:true });
+  document.getElementById("mp-save").addEventListener("click", ()=>{ confirmPayment(o, document.getElementById("mp-note").value.trim()); });
+}
+function confirmPayment(o, note){
+  const b = o.billing, me = state.currentUser;
+  Object.assign(b, { status:"paid", paidAt:Date.now(), confirmedBy:me.name, confirmNote:note, rejectNote:null });
+  closeSpModal(); render(); toast(`${b.no} marked as paid.`);
+  saveThenNotify(o, "payment_confirmed", o.userName);
+}
+async function openReceiptReview(o){
+  const b = o.billing, recs = b.receipts||[];
+  showSpModal(`${esc(b.no)} — ${esc(o.userName)}`,
+    `<div class="cmp-facts"><div><span>Amount billed</span><strong>${peso(b.amount)}</strong></div><div><span>Due</span>${fmtDue(b.dueDate)}</div><div><span>Status</span>${billBadge(b)}</div><div><span>Pays by</span>${esc(o.payMode||"—")}</div></div>
+     <div class="bill-receipts">${recs.length?recs.map((r,n)=>`<button class="chip ${n===recs.length-1?"active":""}" data-rc="${n}">${esc(r.name)} · ${fmtDateShort(r.at)}${r.rejected?" (rejected)":""}</button>`).join(""):`<span class="muted">No receipt attached.</span>`}</div>
+     <div class="pdf-box" id="rc-view"><p class="muted">${recs.length?"Loading the receipt…":""}</p></div>
+     ${b.status==="for_confirmation"?`<label>Note <span class="muted">(required when rejecting)</span><textarea id="rc-note" rows="2" placeholder="e.g. The amount on the receipt doesn't match the billing."></textarea></label>`:`${b.confirmedBy?`<p class="muted">Confirmed by ${esc(b.confirmedBy)} on ${fmtDateShort(b.paidAt)}${b.confirmNote?` — ${esc(b.confirmNote)}`:""}</p>`:""}`}`,
+    `<button class="btn btn-ghost" data-sp-close>Close</button>${b.status==="for_confirmation"?`<button class="btn btn-danger" id="rc-reject">Reject receipt</button><button class="btn btn-primary" id="rc-confirm">Confirm payment</button>`:""}`);
+  const load = async n=>{
+    const r = recs[n]; if(!r) return;
+    const box = document.getElementById("rc-view"); if(box) box.innerHTML = `<p class="muted">Loading the receipt…</p>`;
+    document.querySelectorAll("[data-rc]").forEach(c=>c.classList.toggle("active", Number(c.dataset.rc)===n));
+    try{
+      const f = await CGS_SHEETS.getReceipt(o.id, r.fileId);
+      const url = base64ToBlobUrl(f.base64, f.type==="pdf"?"application/pdf":f.type==="png"?"image/png":"image/jpeg");
+      if(box) box.innerHTML = f.type==="pdf" ? `<iframe class="pdf-frame" src="${url}" title="Receipt"></iframe>` : `<img src="${url}" alt="Payment receipt" style="max-width:100%;border-radius:8px;" />`;
+    }catch(err){ if(box) box.innerHTML = `<div class="remark-box">Couldn't load the receipt: ${esc(err.message)}</div>`; }
+  };
+  document.querySelectorAll("[data-rc]").forEach(c=>c.addEventListener("click", ()=>load(Number(c.dataset.rc))));
+  const cf = document.getElementById("rc-confirm"), rj = document.getElementById("rc-reject");
+  if(cf) cf.addEventListener("click", ()=>confirmPayment(o, (document.getElementById("rc-note").value||"").trim()));
+  if(rj) rj.addEventListener("click", ()=>{
+    const reason = document.getElementById("rc-note").value.trim();
+    if(reason.length<3){ toast("Write why the receipt can't be accepted, so they can fix it.", true); return; }
+    b.status = "unpaid"; b.rejectNote = reason; b.receipts = recs.map(r=>({ ...r, rejected:true }));
+    closeSpModal(); render(); toast("Receipt rejected — the requester was asked to attach a correct one.");
+    saveThenNotify(o, "receipt_rejected", o.userName);
+  });
+  if(recs.length) load(recs.length-1);
+}
+
+/* ---------- requester ---------- */
+function viewUserBilling(){
+  const list = myOrders().filter(o=>o.billing).sort((a,b)=>b.billing.issuedAt-a.billing.issuedAt);
+  const toPay = round2(list.filter(o=>o.billing.status==="unpaid").reduce((s,o)=>s+o.billing.amount,0));
+  const waiting = list.filter(o=>o.billing.status==="for_confirmation").length;
+  const paid = round2(list.filter(o=>o.billing.status==="paid").reduce((s,o)=>s+o.billing.amount,0));
+  const card = o=>{ const b = o.billing; return `<div class="ticket-card">
+    <div class="ticket-top"><div>
+      <div class="ticket-id">${esc(b.no)} · ticket ${o.id} · issued ${fmtDateShort(b.issuedAt)}</div>
+      <div class="ticket-title bill-amount">${peso(b.amount)}</div>
+      <div class="ticket-meta">${esc(o.company||o.township)} · due ${fmtDue(b.dueDate)}${o.payMode?` · ${esc(o.payMode)}`:""}</div>
+    </div>${billBadge(b)}</div>
+    ${b.note?`<div class="remark-box"><strong>From CGS:</strong> ${esc(b.note)}</div>`:""}
+    ${b.rejectNote&&b.status==="unpaid"?`<div class="remark-box"><strong>Your last receipt wasn't accepted:</strong> ${esc(b.rejectNote)}</div>`:""}
+    ${(b.receipts||[]).length?`<div class="bill-receipts">${b.receipts.map(r=>`<button class="chip" data-receipt-view="${o.id}" data-fid="${esc(r.fileId)}">${esc(r.name)} · ${fmtDateShort(r.at)}${r.rejected?" (not accepted)":""}</button>`).join("")}</div>`:""}
+    <div class="ticket-actions">
+      ${b.status!=="paid" ? `<label class="btn btn-primary btn-sm file-btn">${b.status==="for_confirmation"?"Attach another receipt":"Attach payment receipt"}<input type="file" hidden accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" data-receipt-for="${o.id}" /></label>` : ""}
+      ${b.status==="for_confirmation" ? `<span class="muted" style="font-size:12.5px;">CGS will confirm your payment shortly.</span>` : ""}
+      ${b.status==="paid" ? `<span class="muted" style="font-size:12.5px;">Paid — confirmed ${fmtDateShort(b.paidAt)}${b.confirmNote?` · ${esc(b.confirmNote)}`:""}</span>` : ""}
+    </div></div>`; };
+  return `<div class="view-head"><div><h2>Billing</h2><p>CGS bills your tickets after delivery. Pay, then attach your payment receipt here so we can confirm it.</p></div></div>
+  <div class="kpi-row">
+    <div class="kpi-card ${toPay?'warn':''}"><div class="kpi-label">To pay</div><div class="kpi-value">${peso(toPay)}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Waiting for CGS to confirm</div><div class="kpi-value">${waiting}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Paid</div><div class="kpi-value">${peso(paid)}</div></div>
+  </div>
+  ${list.length ? list.map(card).join("") : emptyState("No billing yet","CGS issues a billing once your ticket is delivered. It will show up here, and you'll get an e-mail.")}`;
+}
+function afterRenderBilling(){
+  document.querySelectorAll("[data-receipt-for]").forEach(inp=>inp.addEventListener("change", ()=>{ const f = inp.files[0]; if(f) submitReceipt(inp.dataset.receiptFor, f); inp.value = ""; }));
+  document.querySelectorAll("[data-receipt-view]").forEach(b=>b.addEventListener("click", ()=>viewReceipt(b.dataset.receiptView, b.dataset.fid)));
+}
+async function submitReceipt(orderId, file){
+  const o = state.orders.find(x=>x.id===orderId); if(!o || !o.billing || o.billing.status==="paid") return;
+  const okType = /^(application\/pdf|image\/jpeg|image\/png)$/.test(file.type) || /\.(pdf|jpe?g|png)$/i.test(file.name);
+  if(!okType){ toast("Attach the receipt as a PDF, JPG or PNG.", true); return; }
+  if(file.size > 8*1024*1024){ toast("That file is over 8 MB. Please attach a smaller one.", true); return; }
+  toast("Uploading your receipt…");
+  try{
+    const data = await CGS_SHEETS.fileToBase64(file);
+    const r = await CGS_SHEETS.uploadReceipt(orderId, file.name, data);
+    const b = o.billing;
+    b.receipts = (b.receipts||[]).concat([{ fileId:r.fileId, name:r.name, type:r.type, at:Date.now(), by:state.currentUser.name }]);
+    b.status = "for_confirmation"; b.rejectNote = null;
+    toast("Receipt attached — CGS will confirm your payment.");
+    render();
+    saveThenNotify(o, "receipt_attached", "CGS");
+  }catch(err){ toast("Couldn't upload the receipt: " + err.message, true); }
+}
+
+/* ---------------------------- LIVE REFRESH ---------------------------------
+   Every ~20 seconds (and when you come back to the tab) the app asks the Sheet one tiny question —
+   "has anything changed?" — and only reloads when the answer is yes. It never reloads while you have
+   unsaved changes, a pop-up open, or are typing, so it can't wipe out what you're doing. */
+CGS_SHEETS.POLL_MS = 20000;
+let liveTimer = null, liveBusy = false;
+function userIsBusy(){
+  const a = document.activeElement;
+  return !!document.querySelector(".modal.open") || document.getElementById("cart-drawer").classList.contains("open") ||
+         (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.type!=="checkbox" && a.type!=="radio" && a.type!=="button" && a.getClientRects().length>0);   // only a field you can actually see
+}
+async function liveSync(){
+  if(liveBusy || !state.currentUser || !CGS_SHEETS.enabled() || !CGS_SHEETS.loaded || !CGS_SHEETS.token) return;
+  if(document.hidden || CGS_SHEETS._saving || CGS_SHEETS._pending || userIsBusy()) return;
+  liveBusy = true;
+  try{
+    const v = await CGS_SHEETS.version();
+    if(v === CGS_SHEETS.dataVersion) return;
+    const data = await CGS_SHEETS.loadAll(); if(!data) return;
+    if(CGS_SHEETS._saving || CGS_SHEETS._pending || userIsBusy() || !state.currentUser) return;   // something started while we were loading: try again next round
+    ingestBundle(data, state.currentUser);
+    render();
+  }catch(e){ /* offline or signed out: try again next round */ }
+  finally{ liveBusy = false; }
+}
+function restartLiveSync(){
+  clearInterval(liveTimer);
+  liveTimer = setInterval(liveSync, CGS_SHEETS.POLL_MS);
+}
+restartLiveSync();
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) liveSync(); });
+window.addEventListener("focus", ()=>liveSync());
 
 /* ---------------------------- GOOGLE SHEETS SYNC ---------------------------
    snapshotState() is what gets pushed to the Sheet (debounced, see

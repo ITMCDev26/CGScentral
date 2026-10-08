@@ -608,3 +608,11 @@ tr:hover td{background:var(--sage-100);}
 .auth-form label:has(> .req) > input:not([type=checkbox]), .auth-form label:has(> .req) > select, .auth-form label:has(> .req) > textarea,
 .modal-body label:has(> .req) > input:not([type=checkbox]), .modal-body label:has(> .req) > select, .modal-body label:has(> .req) > textarea{display:block; margin-top:6px; width:100%; box-sizing:border-box;}
 .auth-form select{font-weight:500;}
+
+/* ===== Billing ===== */
+.bill-chip{display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; padding:9px 12px; background:var(--sage-100); border-radius:10px; font-size:13px;}
+.bill-amount{font-variant-numeric:tabular-nums;}
+.bill-receipts{display:flex; flex-wrap:wrap; gap:6px; margin:10px 0;}
+.filter-bar{display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 14px;}
+
+.bill-actions{display:flex; flex-wrap:wrap; gap:6px; min-width:150px;}
