@@ -675,10 +675,10 @@ function ingestBundle(data, user){
 function finishSignIn(user, token, remember, data){
   CGS_SHEETS.token = token || null;
   if(data) ingestBundle(data, user);
-  if(remember && token){
+  if(token){   // always stay signed in on this device (refresh or close the tab) until the person presses Sign out
     ls.set("cgs_session", JSON.stringify({ token, email:user.email, exp: Date.now()+REMEMBER_DAYS*86400000 }));
     ls.set("cgs_last_email", user.email);
-  } else { ls.del("cgs_session"); ls.del("cgs_last_email"); }
+  } else { ls.del("cgs_session"); }
   login(user);
 }
 async function refreshFromSheet(){
@@ -726,7 +726,7 @@ document.getElementById("signin-form").addEventListener("submit", async e=>{
   try{
     const email = document.getElementById("si-email").value.trim().toLowerCase();
     const pass = document.getElementById("si-password").value;
-    const remember = document.getElementById("si-remember").checked;
+    const remember = true;   // sessions always last REMEMBER_DAYS; only Sign out ends them
     if(!CGS_SHEETS.enabled()){
       const u = localDemoUser(email, pass);
       if(!u){ toast("Incorrect email or password.", true); return; }
