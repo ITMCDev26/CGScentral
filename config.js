@@ -3,7 +3,7 @@
    On Vercel you can leave this as it is and set an environment variable called
    CGS_WEB_APP_URL instead — see README.md. Leave it empty to run on local demo data. */
 window.CGS_CONFIG = {
-  WEB_APP_URL: "https://script.google.com/macros/s/AKfycbza1Bdj_FDKQreEgX47XE-WrN_6mRiFKa7i00FoPnrAzaDdVrCBxOQgBP91KVcsCWbY/exec",
+  WEB_APP_URL: "https://script.google.com/macros/s/AKfycbzS7k-oioyNubj9jGg9GsEa2JHUleoI-1Tzde0aTYnJbDQjkyQZhZT5ZUjuyXuhjOEB/exec",
   /* Shown on Approver 2's tick box. The e-mail itself is sent by the Apps Script, which holds the real address. */
   ESTATE_HEAD_EMAIL: "mcgenrevegar@gmail.com"
 };
