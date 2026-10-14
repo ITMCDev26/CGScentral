@@ -271,6 +271,7 @@ const CGS_SHEETS = {
   getSignedCp(orderId){ return this._request({ action:"getSignedCp", orderId }); },
   uploadReceipt(orderId, fileName, data){ return this._request({ action:"uploadReceipt", orderId, fileName, data }); },
   getReceipt(orderId, fileId){ return this._request({ action:"getReceipt", orderId, fileId }); },
+  copyToEstateHead(orderId){ return this._request({ action:"copyToEstateHead", orderId }); },
   notify(orderId, kind){ return this._request({ action:"notify", orderId, kind }).catch(()=>null); },
 
   /* Records a new account in the Users tab right away (server checks for duplicates). */

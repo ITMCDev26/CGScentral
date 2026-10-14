@@ -2240,8 +2240,34 @@ function isApprover(u){ u = u || state.currentUser; return !!u && (u.role==="app
 function cpNumberFor(o){ return "CP-" + String(o.id).replace(/^TCK-/,""); }
 function clientSeesProposal(o){ return !!(o.proposal && o.proposal.sentAt); }
 function isStaffView(){ return !!state.currentUser && state.currentUser.role!=="user"; }
+/* ---------- signage design link (Google Drive) ----------
+   Every SIGNAGES line must carry a Google Drive link to the design being ordered.
+   The link travels with the order line, so CGS admin, both approvers and the client all see it. */
+const ESTATE_HEAD_EMAIL = (window.CGS_CONFIG && window.CGS_CONFIG.ESTATE_HEAD_EMAIL) || "mcgenrevegar@gmail.com";
+function designRequired(it){ return !!it && it.segment==="SIGNAGES"; }
+function driveInfo(raw){
+  let u; try{ u = new URL(String(raw||"").trim()); }catch(e){ return null; }
+  if(u.protocol!=="https:" || u.hostname!=="drive.google.com") return null;
+  let m = u.pathname.match(/\/folders\/([\w-]{10,})/);
+  if(m) return { id:m[1], folder:true, view:"https://drive.google.com/drive/folders/"+m[1], preview:"https://drive.google.com/embeddedfolderview?id="+m[1]+"#grid" };
+  m = u.pathname.match(/\/(?:file\/)?d\/([\w-]{10,})/) || (u.searchParams.get("id")||"").match(/^([\w-]{10,})$/);
+  if(m) return { id:m[1], folder:false, view:"https://drive.google.com/file/d/"+m[1]+"/view", preview:"https://drive.google.com/file/d/"+m[1]+"/preview" };
+  return null;
+}
+function designNoteHTML(url){
+  const d = driveInfo(url); if(!d) return "";
+  return `<div class="sp-note sp-design">Design: <a href="${esc(d.view)}" target="_blank" rel="noopener">Open in Google Drive</a> · <button type="button" class="linklike" data-design-toggle>Preview</button><div class="design-prev hidden" data-src="${esc(d.preview)}"></div></div>`;
+}
+document.addEventListener("click", e=>{
+  const b = e.target.closest && e.target.closest("[data-design-toggle]"); if(!b) return;
+  const box = b.parentElement.querySelector(".design-prev"); if(!box) return;
+  if(box.classList.contains("hidden")){
+    if(!box.firstChild) box.innerHTML = `<iframe class="design-frame" src="${box.dataset.src}" title="Signage design preview" loading="lazy"></iframe><p class="muted" style="font-size:11.5px;margin:4px 0 0;">Blank? The file must be shared as “Anyone with the link can view”.</p>`;
+    box.classList.remove("hidden"); b.textContent = "Hide preview";
+  } else { box.classList.add("hidden"); b.textContent = "Preview"; }
+});
 function spItemNotesHTML(i){
-  return (i.customization ? `<div class="sp-note">Customization: ${esc(i.customization)}</div>` : "") + (i.note ? `<div class="sp-note">Special request: ${esc(i.note)}</div>` : "");
+  return (i.customization ? `<div class="sp-note">Customization: ${esc(i.customization)}</div>` : "") + (i.note ? `<div class="sp-note">Special request: ${esc(i.note)}</div>` : "") + (i.designLink ? designNoteHTML(i.designLink) : "");
 }
 function spItemRowsHTML(o){
   const showPrice = isStaffView() ? true : clientSeesProposal(o);
@@ -2353,16 +2379,39 @@ function companyBanner(){
 function openSpAddModal(itemId, lineId, fromCart){
   const it = CATALOG.find(i=>i.id===itemId); if(!it) return;
   const line = lineId ? state.spCart.find(l=>l.lineId===lineId) : null;
+  const needDesign = designRequired(it);
   showSpModal(esc(it.name),
     `<p class="muted" style="margin:0 0 10px;font-size:13px;">${esc(it.segment)} · per ${esc(it.oum)} · CGS will quote the price.</p>
      <label>Quantity <span class="req">*</span><input type="number" id="spa-qty" min="1" step="1" value="${line?line.qty:1}" /></label>
      <label>Customization <input type="text" id="spa-custom" maxlength="120" placeholder="e.g. single side / double side, size, color" value="${esc(line?line.customization:"")}" /></label>
-     <label>Special request <textarea id="spa-note" rows="3" maxlength="400" placeholder="Anything else we should know about this item?">${esc(line?line.note:"")}</textarea></label>`,
+     <label>Special request <textarea id="spa-note" rows="3" maxlength="400" placeholder="Anything else we should know about this item?">${esc(line?line.note:"")}</textarea></label>
+     ${needDesign ? `<label>Design link — Google Drive <span class="req">*</span><input type="url" id="spa-design" placeholder="https://drive.google.com/file/d/…/view" value="${esc(line?line.designLink:"")}" /></label>
+     <p class="field-note" style="margin-top:-6px;">Upload the signage design to Google Drive, set sharing to “Anyone with the link can view”, then paste the link here. It is required and goes to CGS with your order.</p>
+     <div id="spa-design-prev"></div>` : ""}`,
     `<button class="btn btn-ghost" data-sp-close>Cancel</button><button class="btn btn-primary" id="spa-save">${line?"Save changes":"Add to cart"}</button>`, { narrow:true });
+  if(needDesign){
+    const inp = document.getElementById("spa-design"), box = document.getElementById("spa-design-prev"); let shown = "", t;
+    const paint = ()=>{
+      const d = driveInfo(inp.value);
+      if(!inp.value.trim()){ shown = ""; box.innerHTML = ""; return; }
+      if(!d){ shown = ""; box.innerHTML = `<p class="sp-design-bad">That isn't a Google Drive link. Copy it from Drive → Share → Copy link.</p>`; return; }
+      if(d.id===shown) return; shown = d.id;
+      box.innerHTML = `<div class="design-prev"><iframe class="design-frame" src="${esc(d.preview)}" title="Signage design preview"></iframe><p class="muted" style="font-size:11.5px;margin:4px 0 0;">Preview blank? Set sharing to “Anyone with the link can view”, then re-paste the link.</p></div>`;
+    };
+    inp.addEventListener("input", ()=>{ clearTimeout(t); t = setTimeout(paint, 400); });
+    paint();
+  }
   document.getElementById("spa-save").addEventListener("click", ()=>{
     const qty = parseInt(document.getElementById("spa-qty").value, 10);
     if(!(qty>=1 && qty<=100000)){ toast("Enter a quantity of 1 or more.", true); return; }
     const data = { qty, customization: document.getElementById("spa-custom").value.trim(), note: document.getElementById("spa-note").value.trim() };
+    if(needDesign){
+      const raw = document.getElementById("spa-design").value.trim();
+      if(!raw){ toast("Attach the Google Drive link of the signage design — it's required.", true); document.getElementById("spa-design").focus(); return; }
+      const d = driveInfo(raw);
+      if(!d){ toast("That isn't a Google Drive link. Copy it from Drive → Share → Copy link.", true); document.getElementById("spa-design").focus(); return; }
+      data.designLink = d.view;
+    }
     if(line) Object.assign(line, data);
     else state.spCart.push({ lineId:"L"+Date.now().toString(36)+Math.random().toString(36).slice(2,6), itemId, ...data });
     closeSpModal(); updateCartBadge(); toast(line ? "Cart updated." : "Added to cart.");
@@ -2448,7 +2497,7 @@ function openSpSubmit(){
 function createSpOrder({ billTo, to }){
   const u = state.currentUser;
   const items = state.spCart.map(l=>{ const it = CATALOG.find(i=>i.id===l.itemId);
-    return { itemId:it.id, name:it.name, segment:it.segment, oum:it.oum, qty:l.qty, rate:null, avail:"available", customization:l.customization, note:l.note }; });
+    return { itemId:it.id, name:it.name, segment:it.segment, oum:it.oum, qty:l.qty, rate:null, avail:"available", customization:l.customization, note:l.note, designLink:l.designLink||"" }; });
   const o = makeOrder(u, items, u.company || "Special Projects", "Special Projects", "BATCH-"+Date.now());
   Object.assign(o, { flow:"sp", deliveryType:"SP", status:"sp_pricing", company:u.company, companyId:u.companyId, cpNumber:u.cpNumber,
     payMode:state.spPayMode, billTo, proposalTo:to, deliveryAddress:to.address, proposal:null, adminRemark:"" });
@@ -2767,7 +2816,8 @@ function openApprovalModal(orderId){
   const o = state.orders.find(x=>x.id===orderId), stage = approverStage();
   if(!o || o.status !== (stage===1 ? "sp_approver1" : "sp_approver2")){ toast("This proposal is no longer waiting for you.", true); render(); return; }
   showSpModal(`Approval — ${esc(o.proposal.no)}`,
-    `${proposalDocHTML(o)}<label class="sp-remark">Remark <span class="muted">(required when sending back)</span><textarea id="ap-remark" rows="2" placeholder="e.g. Please apply the 5% volume discount."></textarea></label>`,
+    `${proposalDocHTML(o)}<label class="sp-remark">Remark <span class="muted">(required when sending back)</span><textarea id="ap-remark" rows="2" placeholder="e.g. Please apply the 5% volume discount."></textarea></label>
+     ${stage===2 ? `<label class="sp-copy"><input type="checkbox" id="ap-copy-head" /><span>Send a copy of this cost proposal to the Estate Management Head<br><span class="muted" style="font-size:12px;">${esc(ESTATE_HEAD_EMAIL)} · sent automatically when you tap Approve</span></span></label>` : ""}`,
     `<button class="btn btn-ghost" id="ap-print">Print</button><button class="btn btn-danger" id="ap-return">Send back for revision</button><button class="btn btn-primary" id="ap-approve">Approve</button>`);
   document.getElementById("ap-print").addEventListener("click", ()=>printProposal(o));
   document.getElementById("ap-approve").addEventListener("click", ()=>decideProposal(o, stage, true));
@@ -2777,6 +2827,8 @@ function decideProposal(o, stage, approve){
   const remark = document.getElementById("ap-remark").value.trim();
   if(!approve && remark.length<3){ toast("Write a short remark so the admin knows what to change.", true); return; }
   const me = state.currentUser, now = Date.now(), key = stage===1 ? "a1" : "a2";
+  const copyHead = stage===2 && approve && !!(document.getElementById("ap-copy-head")||{}).checked;
+  if(copyHead) o.proposal.copyToHead = { to:ESTATE_HEAD_EMAIL, by:me.name, at:now };
   o.proposal[key] = { status: approve?"approved":"rejected", by:me.name, email:me.email, at:now, remark };
   o.proposal.history = (o.proposal.history||[]).concat([{ ts:now, by:me.name, role:me.role, action:(approve?"approved":"returned")+stage, remark }]);
   let kind, who;
@@ -2786,7 +2838,17 @@ function decideProposal(o, stage, approve){
   closeSpModal();
   toast(approve ? (stage===1 ? "Approved — sent to Approver 2." : "Approved — the cost proposal is on its way to the client.") : "Sent back to the admin for revision.");
   render();
-  saveThenNotify(o, kind, who);
+  const sent = saveThenNotify(o, kind, who);
+  if(copyHead) sent.then(()=>sendEstateHeadCopy(o));
+}
+function sendEstateHeadCopy(o){
+  if(!CGS_SHEETS.enabled()){ toast("Demo mode — the copy to the Estate Management Head is only e-mailed when connected to the Google Sheet."); return; }
+  return CGS_SHEETS.copyToEstateHead(o.id).then(r=>{
+    if(r && r.sent) toast("Copy of the cost proposal e-mailed to the Estate Management Head.");
+    else if(!(r && r.duplicate)) toast("Approved — but the copy to the Estate Management Head couldn't be sent.", true);
+  }).catch(err=>{
+    toast("Approved — but the copy to the Estate Management Head failed: "+(err && err.message || "unknown error")+".", true);
+  });
 }
 
 
