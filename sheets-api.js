@@ -52,14 +52,12 @@ const CGS_SHEETS = {
   companies: null,        // public list for the sign-up drop-down: [{id, name, status}]
   canWrite: {},           // which tabs this person's role may save (the server enforces it too)
   WRITABLE: { admin:["orders","catalog","vehicles","availabilityLog","townships"], user:["orders","catalog","availabilityLog"],
-              approver1:["orders"], approver2:["orders"] },
+              ga:["orders"], collection:["orders"], approver1:["orders"], approver2:["orders"] },
 
   /* The Sheet's data now comes WITH the sign-in answer, filtered for this person's role.
      ingest() records what the Sheet holds so later saves can send only the differences. */
-  dataVersion: null,       // the Sheet's change counter as of the last time we looked
   ingest(data, role){
     this.loaded = true;
-    this.dataVersion = data.version != null ? data.version : null;
     this._setBase(data);
     this.canWrite = {};
     (this.WRITABLE[role] || []).forEach(t=>{ this.canWrite[t] = true; });
@@ -146,8 +144,6 @@ const CGS_SHEETS = {
     try{
       const res = await this._request({ action:"saveDelta", changes:d.changes, orderSeq:payload.orderSeq });
       this._base = d.next;           // only now do we treat these rows as saved
-      // if nobody else saved in between, our own save is the only change: don't treat it as "something new" later
-      if(res.version != null && this.dataVersion != null && res.version === this.dataVersion + 1) this.dataVersion = res.version;
       if(res.denied && typeof this.onDenied === "function") this.onDenied(res.denied);
       this._failures = 0;
       if(!this._again) this._pending = false;
@@ -242,16 +238,6 @@ const CGS_SHEETS = {
     document.body.appendChild(frame);
   },
 
-  /* Ticket numbers come from the server so two devices can never pick the same one. */
-  async reserveSeq(count){ const r = await this._request({ action:"reserveSeq", count }); return r.start; },
-  /* Has anything in the Sheet changed since we last looked? (one tiny request) */
-  async version(){
-    const res = await fetch(this.WEB_APP_URL + "?action=version&token=" + encodeURIComponent(this.token), { method:"GET" });
-    const out = await res.json();
-    if(!out || !out.ok) throw new Error((out && out.error) || "version check failed");
-    return out.version;
-  },
-
   /* ---- Special Projects ---- */
   fileToBase64(file){
     return new Promise((resolve, reject)=>{
@@ -271,7 +257,6 @@ const CGS_SHEETS = {
   getSignedCp(orderId){ return this._request({ action:"getSignedCp", orderId }); },
   uploadReceipt(orderId, fileName, data){ return this._request({ action:"uploadReceipt", orderId, fileName, data }); },
   getReceipt(orderId, fileId){ return this._request({ action:"getReceipt", orderId, fileId }); },
-  copyToEstateHead(orderId){ return this._request({ action:"copyToEstateHead", orderId }); },
   notify(orderId, kind){ return this._request({ action:"notify", orderId, kind }).catch(()=>null); },
 
   /* Records a new account in the Users tab right away (server checks for duplicates). */

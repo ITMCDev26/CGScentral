@@ -80,16 +80,22 @@
         <label>Work email
           <input type="email" id="su-email" placeholder="you@megaworldcorp.com" required />
         </label>
-        <p class="field-note" id="su-route-note">Emails ending in <code>@megaworldcorp.com</code> are routed to the Megaworld project. For any other email, tell us your company below.</p>
+        <p class="field-note" id="su-route-note">Every account belongs to a BIR-registered company — Megaworld teams too. Pick your company below. Emails ending in <code>@megaworldcorp.com</code> are routed to the Megaworld project.</p>
         <div id="su-sp-fields" class="hidden">
           <label>Company <span class="req">*</span>
             <select id="su-company"><option value="">Loading companies…</option></select>
           </label>
           <p class="field-note" id="su-company-note">Not on the list? <button type="button" class="linklike" id="su-goto-register">Register your company</button> first — you can sign up right after.</p>
-          <label>To whom to bill the orders <span class="req">*</span>
-            <input type="text" id="su-billto" placeholder="e.g. Accounting Department / Maria Reyes" />
+          <label>Billed name <span class="req">*</span>
+            <input type="text" id="su-billto" placeholder="Who the billing is addressed to, e.g. Maria Reyes" />
           </label>
-          <p class="field-note">You can change this when you submit an order.</p>
+          <label>Billed position <span class="req">*</span>
+            <input type="text" id="su-billpos" placeholder="e.g. Accounting Manager" />
+          </label>
+          <label>Billing address <span class="muted">(leave blank to use the company's BIR address)</span>
+            <input type="text" id="su-billaddr" placeholder="Unit / Street, Barangay, City" />
+          </label>
+          <p class="field-note">You can pick someone else to bill each time you check out.</p>
           <label>CP number <span class="req">*</span>
             <input type="tel" id="su-cp" placeholder="0917 123 4567" />
           </label>
@@ -102,12 +108,15 @@
 
       <!-- REGISTER A COMPANY -->
       <form id="company-form" class="auth-form hidden">
-        <p class="field-note">Not a Megaworld team? Register your company once. CGS checks your BIR Form 2303, then everyone from your company can order.</p>
+        <p class="field-note">Every company — Megaworld included — registers once. CGS checks your BIR Form 2303 and TIN, then everyone from your company can order.</p>
         <label>Company name <span class="req">*</span>
           <input type="text" id="co-reg-name" placeholder="Wellspring Academy" required />
         </label>
         <label>Address (BIR registered) <span class="req">*</span>
           <textarea id="co-reg-address" rows="2" placeholder="Unit / Street, Barangay, City" required></textarea>
+        </label>
+        <label>TIN <span class="req">*</span>
+          <input type="text" id="co-reg-tin" placeholder="000-000-000-00000" inputmode="numeric" required />
         </label>
         <label>Company email <span class="req">*</span>
           <input type="email" id="co-reg-email" placeholder="admin@yourcompany.com" required />
@@ -164,6 +173,14 @@
       <button class="nav-item" data-view="u-billing"><i data-ic="doc"></i>Billing <span class="pill" id="sp-billing-count">0</span></button>
     </nav>
 
+    <nav id="nav-ga" class="sidenav hidden">
+      <button class="nav-item active" data-view="ga-billing"><i data-ic="doc"></i>Billing</button>
+    </nav>
+
+    <nav id="nav-collection" class="sidenav hidden">
+      <button class="nav-item active" data-view="col-dashboard"><i data-ic="doc"></i>Collection <span class="pill" id="c-collection">0</span></button>
+    </nav>
+
     <nav id="nav-approver" class="sidenav hidden">
       <button class="nav-item active" data-view="p-queue"><i data-ic="check"></i>For my approval <span class="pill" id="c-approval">0</span></button>
       <button class="nav-item" data-view="p-history"><i data-ic="clock"></i>My decisions</button>
@@ -180,6 +197,7 @@
       <button class="nav-item" data-view="a-dr"><i data-ic="doc"></i>DR Generator</button>
       <button class="nav-item" data-view="a-delivery"><i data-ic="road"></i>For Delivery</button>
       <button class="nav-item" data-view="a-delivered"><i data-ic="box"></i>Delivered Items</button>
+      <button class="nav-item" data-view="a-callclient"><i data-ic="check"></i>Call Clients <span class="pill" id="c-callclient">0</span></button>
       <button class="nav-item" data-view="a-billing"><i data-ic="doc"></i>Billing <span class="pill" id="c-billing">0</span></button>
       <button class="nav-item" data-view="a-history"><i data-ic="clock"></i>Overall History</button>
       <button class="nav-item" data-view="a-edit"><i data-ic="doc"></i>Edit Orders</button>
@@ -258,6 +276,16 @@
           <div><span>Email</span><strong id="co-email">—</strong></div>
         </div>
       </div>
+      <div class="ordered-by">
+        <div class="ordered-by-title">Bill to</div>
+        <label class="check"><input type="radio" name="co-bill" value="default" checked /> <span id="co-bill-default-text">—</span></label>
+        <label class="check"><input type="radio" name="co-bill" value="other" /> Someone else</label>
+        <div id="co-bill-other" class="hidden">
+          <label>Name <span class="req">*</span><input type="text" id="co-bill-name" placeholder="Full name" /></label>
+          <label>Position <span class="req">*</span><input type="text" id="co-bill-pos" placeholder="Position" /></label>
+          <label>Billing address<input type="text" id="co-bill-addr" placeholder="Unit / Street, Barangay, City" /></label>
+        </div>
+      </div>
       <div class="co-summary" id="co-summary"></div>
     </div>
     <div class="modal-foot">
@@ -304,5 +332,9 @@
 <div id="toast" class="toast"></div>
 
 <script src="script.js?v=20261008b"></script>
+<script src="billing.js?v=20261022"></script>
+<script src="collection.js?v=20261022"></script>
+<script src="followup.js?v=20261022"></script>
+<script src="clientbilling.js?v=20261022"></script>
 </body>
 </html>
